@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "android"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rustix",
 ]
 
 [[package]]
 name = "attestation"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "der",
  "serde",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "der"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "digest"
@@ -112,7 +112,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "keybox"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "quick-xml",
  "x509",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "prop"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "quick-xml"
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "replay"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "android",
  "attestation",
@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "x509"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "der",
