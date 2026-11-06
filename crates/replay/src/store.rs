@@ -45,6 +45,9 @@ impl Store {
     pub const SETTINGS: &'static str = "settings.json";
     pub const EXECUTABLE: &'static str = "replay";
     pub const EXECUTABLE_MODE: u32 = 0o700;
+    /// The lock that `apply` and the package watcher hold while they read the settings and
+    /// write the configuration, so that neither writes from settings the other replaced.
+    pub const APPLY_LOCK: &'static str = "apply.lock";
 
     pub fn new(layout: &Layout) -> Store {
         Store { directory: layout.store() }
@@ -115,6 +118,12 @@ impl Store {
         self.create()?;
         let bytes = Files::read(source)?;
         Files::write_if_changed(&target, &bytes, Store::EXECUTABLE_MODE)
+    }
+
+    /// Takes `APPLY_LOCK`, waiting for another holder.
+    pub fn lock_apply(&self) -> Result<std::fs::File, ReplayError> {
+        self.create()?;
+        Files::lock(&self.directory.join(Store::APPLY_LOCK), Store::FILE_MODE)
     }
 
     pub fn previous_keybox(&self) -> PathBuf {

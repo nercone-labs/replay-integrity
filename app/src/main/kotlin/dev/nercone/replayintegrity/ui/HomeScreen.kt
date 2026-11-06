@@ -304,7 +304,7 @@ object HomeScreen {
             is Outcome.ConflictsDisabled -> Widgets.Notice(
                 Widgets.Tone.INFORMATION,
                 stringResource(R.string.outcome_conflicts_disabled),
-                (outcome.modules.map { stringResource(R.string.conflict_module, it.name ?: it.id, it.id) } + stringResource(R.string.outcome_conflicts_disabled_text)).joinToString("\n"),
+                (outcome.modules.map { stringResource(R.string.conflict_disabled_module, it.name ?: it.id, it.id) } + stringResource(R.string.outcome_conflicts_disabled_text)).joinToString("\n"),
             ) {
                 logButton()
                 dismiss()

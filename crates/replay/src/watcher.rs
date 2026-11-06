@@ -49,6 +49,13 @@ impl PackageWatcher {
     pub const COMMAND: &'static str = "watch";
     pub const DEFAULT_SETTLE: Duration = Duration::from_secs(3);
     pub const DEFAULT_BOOT_POLL: Duration = Duration::from_secs(5);
+    /// How long `stop` waits for an ended watcher to release its lock.
+    pub const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+    pub const STOP_POLL: Duration = Duration::from_millis(50);
+    /// The roots of the cgroup hierarchies of Android: the unified one, in which the system
+    /// keeps a group per application process (`uid_<uid>/pid_<pid>`) and ends the whole group
+    /// with the application, and the earlier `cpuacct` one.
+    pub const CGROUP_ROOTS: [&'static str; 2] = ["/sys/fs/cgroup", "/acct"];
 
     pub fn new(layout: &Layout) -> PackageWatcher {
         PackageWatcher { layout: layout.clone(), settle: PackageWatcher::DEFAULT_SETTLE, boot_poll: PackageWatcher::DEFAULT_BOOT_POLL }
@@ -138,7 +145,10 @@ impl PackageWatcher {
         Ok(true)
     }
 
-    /// Ends the running watcher, unless it is this process. Returns whether one was ended.
+    /// Ends the running watcher, unless it is this process, and waits up to `STOP_TIMEOUT`
+    /// until it has ended, so that a watcher started right after can take the lock. An ended
+    /// process releases its lock and its command line becomes empty before it is reaped, so
+    /// `running` stops naming it at that point. Returns whether one was ended.
     pub fn stop(&self) -> Result<bool, ReplayError> {
         let Some(pid) = self.running() else { return Ok(false) };
         if pid == std::process::id() {
@@ -146,10 +156,32 @@ impl PackageWatcher {
         }
         let process = ProcessInfo { pid, name: Store::new(&self.layout).executable().to_string_lossy().into_owned() };
         match process.kill() {
-            Ok(()) => Ok(true),
+            Ok(()) => {}
             // It ended between reading its ID and the signal.
-            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => Ok(false),
-            Err(error) => Err(ReplayError::io(format!("end the package watcher {pid}"), error)),
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => return Ok(false),
+            Err(error) => return Err(ReplayError::io(format!("end the package watcher {pid}"), error)),
+        }
+        let started = std::time::Instant::now();
+        while self.running() == Some(pid) {
+            if started.elapsed() > PackageWatcher::STOP_TIMEOUT {
+                return Err(ReplayError::refused(format!("the package watcher {pid} did not end within {} seconds", PackageWatcher::STOP_TIMEOUT.as_secs())));
+            }
+            std::thread::sleep(PackageWatcher::STOP_POLL);
+        }
+        Ok(true)
+    }
+
+    /// Moves this process out of the cgroups of the process that started it, into the root
+    /// groups, and into a session of its own. A watcher started by the application through an
+    /// `su` that does not leave the application's cgroup would otherwise end when the system
+    /// ends the application, which it does by its cgroup. Best effort: a hierarchy that is
+    /// absent or refuses the move is skipped, and the watcher still runs until then.
+    pub fn detach(&self) {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let _ = rustix::process::setsid();
+        let pid = std::process::id().to_string();
+        for root in PackageWatcher::CGROUP_ROOTS {
+            let _ = std::fs::write(self.layout.path(root).join("cgroup.procs"), &pid);
         }
     }
 }

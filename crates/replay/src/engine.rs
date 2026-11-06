@@ -355,6 +355,7 @@ impl Engine {
     /// persisted keys, and restarts as `mode` says. This is what keeps the verdict from
     /// drifting after the modules' own scripts run.
     pub fn apply(&mut self, settings: &Settings, mode: ApplyMode) -> Result<ApplyReport, ReplayError> {
+        let _lock = self.store.lock_apply()?;
         if mode != ApplyMode::EarlyBoot {
             self.store.save_settings(settings)?;
         }
@@ -467,6 +468,7 @@ impl Engine {
         let Some(_lock) = watcher.lock()? else {
             return Ok(WatchReport::AlreadyRunning { pid: watcher.running() });
         };
+        watcher.detach();
         while !android::SystemProperty::is_boot_completed() {
             std::thread::sleep(watcher.boot_poll);
         }
@@ -487,16 +489,24 @@ impl Engine {
 
     /// One round of the package watcher: ends it when the application was uninstalled (removing
     /// the boot hook) or the boot hook removed, and rebuilds `target.txt` otherwise.
+    ///
+    /// While the system runs, `packages.list` also leaves out applications whose storage is
+    /// unmounted (an ejected adopted card), so an absence there is confirmed with the package
+    /// manager before the hook is removed; when the package manager cannot answer, nothing is
+    /// removed.
     fn watch_step(&mut self, package: &str) -> Result<Option<WatchReport>, ReplayError> {
-        if !Engine::is_package_present(&self.layout, package) {
-            self.log.warning(format!("{package} seems to be uninstalled; the boot hook removes itself"));
+        if !Engine::is_package_present(&self.layout, package)
+            && PackageManager::installed().is_ok_and(|installed| !installed.iter().any(|name| name == package))
+        {
+            self.log.warning(format!("{package} is uninstalled; the boot hook removes itself"));
             BootHook::remove(&self.layout)?;
             return Ok(Some(WatchReport::Uninstalled));
         }
-        if !BootHook::current(&self.layout).is_installed() {
-            self.log.info("the boot hook was removed; the package watcher ends");
+        if !BootHook::current(&self.layout).watches {
+            self.log.info("the service script of the boot hook was removed; the package watcher ends");
             return Ok(Some(WatchReport::Stopped));
         }
+        let _lock = self.store.lock_apply()?;
         match self.store.settings() {
             Ok(settings) => {
                 if let Err(error) = self.build_targets(&settings) {

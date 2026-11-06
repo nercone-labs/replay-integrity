@@ -34,12 +34,54 @@ impl Files {
             if let Some(directory) = path.parent() {
                 File::open(directory)?.sync_all()?;
             }
+            Files::remove_orphans(path);
             Ok(())
         })();
         result.map_err(|error| {
             let _ = fs::remove_file(&temporary);
             ReplayError::io_at("write", path, error)
         })
+    }
+
+    /// Removes the temporary files of `path` that processes which no longer run left behind
+    /// (a writer killed between writing and renaming). Best effort: a file that cannot be
+    /// listed or removed is left alone, and so is that of a running process.
+    fn remove_orphans(path: &Path) {
+        let (Some(directory), Some(name)) = (path.parent(), path.file_name()) else { return };
+        let prefix = format!("{}.", name.to_string_lossy());
+        let Ok(entries) = fs::read_dir(directory) else { return };
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            let Some(pid) = file_name.strip_prefix(&prefix).and_then(|rest| rest.strip_suffix(Files::TEMPORARY_SUFFIX)) else { continue };
+            let Ok(pid) = pid.parse::<u32>() else { continue };
+            if pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists() {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Takes an exclusive lock on `path` (created with `mode` if missing), waiting while another
+    /// process holds it. The lock is held until the returned file is closed, which the kernel
+    /// does when the process ends, however it ends.
+    pub fn lock(path: &Path, mode: u32) -> Result<File, ReplayError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(mode)
+            .open(path)
+            .map_err(|error| ReplayError::io_at("open", path, error))?;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        loop {
+            match rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive) {
+                Ok(()) => break,
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(ReplayError::io_at("lock", path, error.into())),
+            }
+        }
+        Ok(file)
     }
 
     /// Writes `bytes` to `path` as `write_atomic` does, unless `path` already holds exactly

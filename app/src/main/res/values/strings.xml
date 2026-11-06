@@ -92,6 +92,7 @@
     <string name="check_daemon">Keystore daemon</string>
     <string name="check_conflicts">Conflicts</string>
     <string name="conflicts_disable">Disable</string>
+    <string name="conflict_disabled_module">%1$s (%2$s)</string>
     <string name="conflicts_disable_help">Disabling stops them from the next boot. Their files stay, and they can be enabled again in the root manager.</string>
     <string name="check_boot">At boot</string>
     <string name="component_keystore">Key attestation</string>

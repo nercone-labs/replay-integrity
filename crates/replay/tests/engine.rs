@@ -479,3 +479,56 @@ fn the_log_file_is_rotated_while_it_is_written() {
     assert!(root.join("replay.log.old").is_file());
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn temporary_files_of_ended_writers_are_removed() {
+    let root = temporary_root();
+    let directory = root.join("data/adb/tricky_store");
+    // A writer that no longer runs (no process has this ID) left its temporary file.
+    let orphan = directory.join(format!("target.txt.{}{}", u32::MAX - 1, Files::TEMPORARY_SUFFIX));
+    fs::write(&orphan, "part").unwrap();
+    // A temporary file of another name is not this file's.
+    let other = directory.join(format!("keybox.xml.{}{}", u32::MAX - 1, Files::TEMPORARY_SUFFIX));
+    fs::write(&other, "part").unwrap();
+    Files::write_atomic(&directory.join("target.txt"), b"com.example\n", 0o644).unwrap();
+    assert!(!orphan.exists());
+    assert!(other.exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_apply_lock_is_released_when_its_holder_closes_it() {
+    let root = temporary_root();
+    let store = replay::Store::new(&Layout::new(&root));
+    let first = store.lock_apply().unwrap();
+    drop(first);
+    // Taking it again does not wait for anyone.
+    drop(store.lock_apply().unwrap());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn stopping_a_watcher_waits_until_it_has_ended() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let watcher = PackageWatcher::new(&layout);
+    // A stand-in watcher: a copy of the shell at the path of the engine copy, running a script
+    // named `watch`, so its command line is that of a watcher.
+    fs::create_dir_all(layout.store()).unwrap();
+    let shell = layout.store().join("replay");
+    fs::copy("/bin/sh", &shell).unwrap();
+    fs::write(root.join("watch"), "sleep 30\n").unwrap();
+    let mut child = std::process::Command::new(&shell).arg("watch").current_dir(&root).spawn().unwrap();
+    fs::write(watcher.lock_path(), child.id().to_string()).unwrap();
+    // Wait until the shell has replaced its command line with ours (it runs at once).
+    let started = std::time::Instant::now();
+    while watcher.running() != Some(child.id()) {
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "the stand-in did not start");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(watcher.stop().unwrap());
+    // Right after `stop`, no watcher is listed, so one can be started at once.
+    assert_eq!(watcher.running(), None);
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&root);
+}

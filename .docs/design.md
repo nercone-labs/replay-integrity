@@ -284,10 +284,16 @@ running `watch`. Reading `/proc/<pid>/cmdline` tells a reused process ID apart, 
 was rejected, because a probe at the moment a watcher starts would make that watcher believe
 another one runs, and it would exit.
 
-The watcher ends when the application is uninstalled (it removes the boot hook, as `boot` does,
-from the same `packages.list` test) and when the boot hook is removed. `hook remove` ends it with
-a signal. When `hook install` replaces the engine copy (an update of the application), it ends the
-watcher that runs the old copy and starts the new one. A rebuild that fails is logged and the
+The watcher ends when the application is uninstalled and when its service script is removed.
+Uninstallation is read from `packages.list`, as `boot` does, and confirmed with the package
+manager, because while the system runs the list also leaves out applications whose storage is
+unmounted (an ejected adopted card); if the package manager cannot answer, nothing is removed.
+`hook remove` ends the watcher with a signal and waits until it has ended. When `hook install`
+replaces the engine copy (an update of the application), it ends the watcher that runs the old
+copy, waits for it to release its lock, and starts the new one; without the wait, the old process
+was still listed for a moment and no new one was started. A watcher started by the application
+moves itself into the root cgroups and a session of its own, because an `su` that keeps the
+child in the application's cgroup would let the system end it with the application. A rebuild that fails is logged and the
 watcher goes on. It keeps no log lines in memory, and the log file is now rotated before every
 line rather than only when a command starts, so a long-running process cannot grow it without
 bound.
@@ -301,8 +307,11 @@ need tools the device may lack.
 
 ### Two writers of one file
 
-The watcher and an `apply` of the app can write `target.txt` at the same moment. `write_atomic`
-used one temporary name per file, so one process could delete the other's temporary file and
-rename a partly written one into place. The temporary file is now named after the process ID, so
-each process renames only its own whole file and the last rename wins. Both build the same list
-from the same settings.
+The watcher and an `apply` of the app can write `target.txt` at the same moment. Two measures
+keep this safe. `apply` and each round of the watcher hold `apply.lock` in the store while they
+read the settings and write, so the watcher cannot write a list built from settings that an
+`apply` has just replaced. And `write_atomic` names its temporary file after the process ID:
+with one fixed name, one writer (the boot hook's, another command's) could delete another's
+temporary file and rename a partly written one into place. A writer killed between writing and
+renaming leaves its temporary file behind; the next write of the same file removes those of
+processes that no longer run.

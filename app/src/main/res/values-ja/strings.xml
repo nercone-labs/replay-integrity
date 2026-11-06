@@ -92,6 +92,7 @@
     <string name="check_daemon">キーストアデーモン</string>
     <string name="check_conflicts">競合</string>
     <string name="conflicts_disable">無効にする</string>
+    <string name="conflict_disabled_module">%1$s(%2$s)</string>
     <string name="conflicts_disable_help">無効にしたモジュールは次回の起動から動作しません。ファイルは残り、root マネージャで再び有効にできます。</string>
     <string name="check_boot">起動時</string>
     <string name="component_keystore">鍵の構成証明</string>
