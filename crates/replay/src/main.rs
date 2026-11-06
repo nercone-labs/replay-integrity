@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use replay::{ApplyMode, Component, Engine, Layout, LogLine, PackageWatcher, ReplayError, Settings};
+use replay::{ApplyMode, Component, Engine, KeyboxPolicy, Layout, LogLine, PackageWatcher, ReplayError, Settings};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -11,7 +11,7 @@ enum Command {
     Status,
     InspectKeybox { file: PathBuf },
     InspectFingerprint { file: PathBuf },
-    InstallKeybox { file: PathBuf, source: Option<String> },
+    InstallKeybox { file: PathBuf, source: Option<String>, policy: KeyboxPolicy },
     InstallFingerprint { file: PathBuf, source: Option<String> },
     Targets,
     Apply { mode: ApplyMode },
@@ -37,7 +37,9 @@ enum Command {
 /// `--status FILE` is a JSON copy of Google's certificate status list, which the application
 /// fetches; without it, revocation is not checked and the result says so. `--settings FILE` is
 /// the settings of the user (`Settings`); without it, the defaults are used. `--source` records
-/// where an installed file came from. `--root` is the base directory, `/` on a device.
+/// where an installed file came from. `--no-downgrade` makes `install-keybox` keep the installed
+/// keybox when the offered one ranks below it (`KeyboxPolicy::NoDowngrade`), which an automatic
+/// refresh uses. `--root` is the base directory, `/` on a device.
 struct CommandLine {
     command: Command,
     root: PathBuf,
@@ -49,7 +51,7 @@ impl CommandLine {
     const USAGE: &'static str = "usage: replay status [--status STATUS.json]
        replay inspect-keybox <keybox.xml> [--status STATUS.json]
        replay inspect-fingerprint <fingerprint.prop|fingerprint.json>
-       replay install-keybox <keybox.xml> [--source TEXT] [--status STATUS.json]
+       replay install-keybox <keybox.xml> [--source TEXT] [--status STATUS.json] [--no-downgrade]
        replay install-fingerprint <fingerprint.prop|fingerprint.json> [--source TEXT] [--settings SETTINGS.json]
        replay targets [--settings SETTINGS.json]
        replay apply [--no-restart] [--settings SETTINGS.json]
@@ -71,6 +73,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
         let mut package: Option<String> = None;
         let mut no_restart = false;
         let mut no_watch = false;
+        let mut no_downgrade = false;
         while let Some(argument) = parser.next()? {
             match argument {
                 Long("root") => root = parser.value()?.parse()?,
@@ -80,6 +83,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
                 Long("package") => package = Some(parser.value()?.string()?),
                 Long("no-restart") => no_restart = true,
                 Long("no-watch") => no_watch = true,
+                Long("no-downgrade") => no_downgrade = true,
                 Value(value) if name.is_none() => name = Some(value.string()?),
                 Value(value) => positional.push(value.string()?),
                 _ => return Err(argument.unexpected()),
@@ -91,7 +95,11 @@ options: --root DIR   the base directory, an absolute path (default /)";
             Some("status") => Command::Status,
             Some("inspect-keybox") => Command::InspectKeybox { file: first(&positional)?.into() },
             Some("inspect-fingerprint") => Command::InspectFingerprint { file: first(&positional)?.into() },
-            Some("install-keybox") => Command::InstallKeybox { file: first(&positional)?.into(), source },
+            Some("install-keybox") => Command::InstallKeybox {
+                file: first(&positional)?.into(),
+                source,
+                policy: if no_downgrade { KeyboxPolicy::NoDowngrade } else { KeyboxPolicy::Replace },
+            },
             Some("install-fingerprint") => Command::InstallFingerprint { file: first(&positional)?.into(), source },
             Some("targets") => Command::Targets,
             Some("apply") => Command::Apply { mode: if no_restart { ApplyMode::NoRestart } else { ApplyMode::Restart } },
@@ -166,9 +174,9 @@ options: --root DIR   the base directory, an absolute path (default /)";
             Command::Status => CommandLine::json(&engine.status(status)?),
             Command::InspectKeybox { file } => CommandLine::json(&engine.inspect_keybox(&CommandLine::read(file)?, status)?),
             Command::InspectFingerprint { file } => CommandLine::json(&engine.inspect_fingerprint(&CommandLine::read(file)?)?),
-            Command::InstallKeybox { file, source } => {
+            Command::InstallKeybox { file, source, policy } => {
                 Engine::require_root()?;
-                CommandLine::json(&engine.install_keybox(&CommandLine::read(file)?, source.clone(), status)?)
+                CommandLine::json(&engine.install_keybox(&CommandLine::read(file)?, source.clone(), status, *policy)?)
             }
             Command::InstallFingerprint { file, source } => {
                 Engine::require_root()?;

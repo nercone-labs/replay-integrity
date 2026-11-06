@@ -81,14 +81,15 @@ impl TargetList {
     /// Builds the list from the installed packages and the settings. The Play stack comes
     /// first and is always in the list; then the third-party packages, the installed wallet
     /// applications (which are often system packages) and the extra packages, without the
-    /// excluded ones and without Xposed managers. Every target gets the mode of the settings.
+    /// excluded ones and without Xposed managers. The Play stack gets `play_target_mode` of the
+    /// settings, and every other target `target_mode`.
     pub fn build(installed: &[String], third_party: &[String], settings: &crate::Settings) -> TargetList {
         let mut targets = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mode = settings.target_mode;
         for package in TargetList::ALWAYS {
             if seen.insert(package) {
-                targets.push(Target { package: package.to_string(), mode });
+                targets.push(Target { package: package.to_string(), mode: settings.play_target_mode });
             }
         }
         let wallets = TargetList::WALLET.iter().filter(|wallet| installed.iter().any(|package| package == *wallet));

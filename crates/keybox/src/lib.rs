@@ -17,8 +17,13 @@
 //! </AndroidAttestation>
 //! ```
 //!
-//! Parsing keeps only public information: the algorithm of each key, the public key its
-//! encoding carries, and the certificates. The secret parts of keys are not kept.
+//! `KeyboxDocument::parse` reads a well-formed document and checks its structure.
+//! `KeyboxDocument::recover` reads the keys of a text that is not one (keybox mirrors serve
+//! documents with broken markup), and `KeyboxDocument::read` uses whichever works.
+//! `KeyboxDocument::render` writes a document back as a well-formed keybox.
+//!
+//! Each key keeps the PEM block of its private key, so that it can be written again; the
+//! `Debug` form of a key leaves that block out.
 
 mod document;
 mod error;

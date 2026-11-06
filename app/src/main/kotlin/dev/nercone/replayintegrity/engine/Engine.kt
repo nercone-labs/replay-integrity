@@ -98,8 +98,14 @@ class Engine(val context: Context) {
     suspend fun inspectFingerprint(file: File): EngineResult<FingerprintReport> =
         run(listOf("inspect-fingerprint", file.absolutePath), FingerprintReport.serializer())
 
-    suspend fun installKeybox(privilege: Privilege, file: File, source: String?, statusList: File?): EngineResult<InstallReport> =
-        run(privilege, listOf("install-keybox", file.absolutePath) + sourceArguments(source) + statusArguments(statusList), InstallReport.serializer())
+    /**
+     * Installs a keybox. With `noDowngrade`, the engine keeps the installed keybox when the
+     * offered one ranks below it, and says why in `InstallReport.declined`.
+     */
+    suspend fun installKeybox(privilege: Privilege, file: File, source: String?, statusList: File?, noDowngrade: Boolean): EngineResult<InstallReport> {
+        val arguments = listOf("install-keybox", file.absolutePath) + sourceArguments(source) + statusArguments(statusList) + (if (noDowngrade) listOf("--no-downgrade") else emptyList())
+        return run(privilege, arguments, InstallReport.serializer())
+    }
 
     suspend fun installFingerprint(privilege: Privilege, file: File, source: String?, settings: EngineSettings): EngineResult<InstallReport> =
         run(privilege, listOf("install-fingerprint", file.absolutePath) + sourceArguments(source) + settingsArguments(settings), InstallReport.serializer())

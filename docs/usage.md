@@ -35,8 +35,8 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
   act (no root, restricted root).
 - **Refresh** downloads fresh inputs and applies them. **Repair** re-applies everything and removes
   stale keys without downloading.
-- The **checklist**: both modules, Zygisk, the keybox (usable EC and RSA keys, revocation,
-  expiry), the fingerprint (model, patch, expiry), the spoof flags (and whether another script
+- The **checklist**: both modules, Zygisk, the keybox (a usable EC key, revocation, expiry, and
+  whether the keystore can read the file), the fingerprint (model, patch, expiry), the spoof flags (and whether another script
   rewrote them), the per-app keys (how many were made with an old keybox), the keystore daemon,
   conflicting modules, and what runs at boot. Tap an item to see its details.
 - **Details**: the privilege in use, the root manager, the last refresh and its problems, the last
@@ -69,7 +69,12 @@ The applications whose keys TEESimulator-RS attests (`target.txt`). Google Play 
 framework and the Play Store are always targets; installed third-party applications and wallet
 applications are added automatically; Xposed managers are always left out.
 
-- **Key handling**: Automatic, Generate or Patch, for every target.
+- **Key handling**: Automatic, Generate or Patch, for every target but Google Play.
+- **Key handling of Google Play**: the same choice for Play services, its framework and the Play
+  Store. Generate is the default and is recommended (TEESimulator-RS documents
+  `com.google.android.gms!`): Play Integrity then always gets a key attested with the keybox.
+  If you had chosen Generate or Patch for every target before this setting existed, Google Play
+  keeps that choice.
 - **Added packages**: system applications (or any package) to attest too.
 - **Excluded packages**: applications that keep the device's own attestation. A target can also
   be excluded from the list with its button.
@@ -86,8 +91,9 @@ Without it, the list follows the installed applications at the next refresh or r
 - **Privilege**: Automatic (Sui or Shizuku as root first, then `su`), Shizuku/Sui only, or `su` only.
 - **Refresh**: whether the keybox and the fingerprint are refreshed, the interval of the scheduled
   refresh (off, 3, 6, 12 or 24 hours), and whether it waits for an unmetered network.
-- **Sources**: the HTTPS URLs of the keybox and the fingerprint. The keybox may be served as XML or
-  base64 of it. Everything downloaded is checked by the engine before it is installed.
+- **Sources**: the HTTPS URLs of the keybox and the fingerprint, and further keybox URLs tried in
+  order when the first cannot be downloaded or serves a worse keybox. The keybox may be served as
+  XML or base64 of it. Everything downloaded is checked by the engine before it is installed.
 - **Applying**: whether a change restarts the keystore and ends the Play processes at once, and a
   button that restarts them now.
 - **Boot**: the boot hook (the root manager runs the engine before the keystore daemon starts),
@@ -95,6 +101,28 @@ Without it, the list follows the installed applications at the next refresh or r
   list when an application is installed or removed; it needs the boot hook), and the repair the
   app runs once the system has started.
 - **Notifications**: whether failures of the boot repair and of scheduled refreshes are notified.
+
+## How a keybox is installed
+
+A refresh installs a downloaded keybox only when it is at least as good as the installed one:
+it must have a usable EC key if the installed one has one, and, when both or neither have one,
+at least as many usable keys. A keybox
+that a mirror serves revoked, expired or untrusted is therefore kept out, and the next source is
+tried; the installed keybox stays, and this is not reported as a failure. Broken XML alone does
+not keep a keybox out, because its keys are written again (below). A keybox you import is
+installed even when it is weak, as long as one of its keys matches its certificate.
+
+What is written to `keybox.xml` is not the downloaded file itself but its keys, checked and
+written again as a well-formed keybox: mirrors often serve files with broken XML (a missing
+quote, a watermark element), from which the keystore would read no key at all. When a keybox
+has usable keys, the others (revoked, untrusted, expired) are left out, so that the keystore
+never uses them. A `keybox.xml` that another tool put there with broken XML is written again,
+with the keys that can be recovered from it, at the next repair or boot; the original is kept in
+`/data/adb/replay-integrity/` as the previous keybox. Recovering keys keeps one keybox without its
+device ID, which the keystore does not read.
+
+An RSA key is not needed for STRONG: Play Integrity attests with EC, and TEESimulator-RS signs
+RSA requests with the EC key when there is no RSA key.
 
 ## Where the files are
 

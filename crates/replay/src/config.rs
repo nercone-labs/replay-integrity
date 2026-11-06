@@ -71,23 +71,43 @@ pub struct Settings {
     /// Installed packages left out of the attestation targets. The Play stack
     /// (`TargetList::ALWAYS`) cannot be left out.
     pub excluded_packages: Vec<String>,
-    /// How TEESimulator-RS handles the keys of every target.
+    /// How TEESimulator-RS handles the keys of every target but the Play stack.
     pub target_mode: TargetMode,
+    /// How TEESimulator-RS handles the keys of the Play stack (`TargetList::ALWAYS`).
+    /// `Generate` by default: Play Integrity then always gets a key attested with the keybox,
+    /// never one of the device's own keystore patched, which fails when that keystore does.
+    pub play_target_mode: TargetMode,
     /// Overrides of the spoof flags, by their key.
     pub spoof_overrides: Vec<(String, bool)>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { extra_packages: Vec::new(), excluded_packages: Vec::new(), target_mode: TargetMode::Auto, spoof_overrides: Vec::new() }
+        Settings {
+            extra_packages: Vec::new(),
+            excluded_packages: Vec::new(),
+            target_mode: TargetMode::Auto,
+            play_target_mode: TargetMode::Generate,
+            spoof_overrides: Vec::new(),
+        }
     }
 }
 
 impl Settings {
     /// Parses settings and checks them: every package must be a package name, so that nothing
     /// else can reach `target.txt`, and every override must name a known spoof flag.
+    ///
+    /// Settings written before `play_target_mode` existed gave the Play stack `target_mode`. When
+    /// the field is missing and that mode was not `Auto`, the user chose it on purpose, so the
+    /// Play stack keeps it; otherwise it gets the default, `Generate`.
     pub fn parse(bytes: &[u8]) -> Result<Settings, ReplayError> {
-        let settings: Settings = serde_json::from_slice(bytes).map_err(|error| ReplayError::Rejected(vec![format!("invalid settings: {error}")]))?;
+        let invalid = |error: serde_json::Error| ReplayError::Rejected(vec![format!("invalid settings: {error}")]);
+        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(invalid)?;
+        let has_play_mode = value.get("playTargetMode").is_some();
+        let mut settings: Settings = serde_json::from_value(value).map_err(invalid)?;
+        if !has_play_mode && settings.target_mode != TargetMode::Auto {
+            settings.play_target_mode = settings.target_mode;
+        }
         let problems = settings.problems();
         if problems.is_empty() { Ok(settings) } else { Err(ReplayError::Rejected(problems)) }
     }

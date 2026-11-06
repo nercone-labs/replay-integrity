@@ -40,9 +40,32 @@ class SettingsTest {
     }
 
     @Test
+    fun aDocumentWithOneKeyboxSourceKeepsIt() {
+        // A document written before more keybox sources existed keeps its source.
+        val values = Settings.decode("""{"keyboxUrl":"https://mirror.example/key"}""")
+        assertEquals(listOf("https://mirror.example/key"), values.keyboxSources())
+        assertEquals("the Play stack generates its keys by default", TargetMode.GENERATE, values.playTargetMode)
+    }
+
+    @Test
+    fun aModeChosenForEveryTargetBeforeKeepsApplyingToThePlayStack() {
+        assertEquals(TargetMode.PATCH, Settings.decode("""{"targetMode":"patch"}""").playTargetMode)
+        assertEquals(TargetMode.GENERATE, Settings.decode("""{"targetMode":"auto"}""").playTargetMode)
+        assertEquals("a stored Play mode wins", TargetMode.AUTO, Settings.decode("""{"targetMode":"patch","playTargetMode":"auto"}""").playTargetMode)
+    }
+
+    @Test
+    fun keyboxSourcesAreTriedInOrderWithoutRepeats() {
+        val values = Settings.Values(keyboxUrl = "https://a.example/key", extraKeyboxUrls = listOf("https://b.example/key", "https://a.example/key", "https://c.example/key"))
+        assertEquals(listOf("https://a.example/key", "https://b.example/key", "https://c.example/key"), values.keyboxSources())
+    }
+
+    @Test
     fun theEngineReceivesOnlyItsSettings() {
         val engine = Settings.Values(excludedPackages = listOf("com.game"), spoofOverrides = mapOf("spoofBuild" to false)).engine()
         assertEquals(listOf("com.game"), engine.excludedPackages)
         assertEquals(mapOf("spoofBuild" to false), engine.overrides())
+        assertEquals(TargetMode.GENERATE, engine.playTargetMode)
+        assertEquals(TargetMode.AUTO, Settings.Values(playTargetMode = TargetMode.AUTO).engine().playTargetMode)
     }
 }

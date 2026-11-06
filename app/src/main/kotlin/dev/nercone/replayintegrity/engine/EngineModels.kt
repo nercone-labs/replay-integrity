@@ -138,15 +138,30 @@ data class KeyVerdict(
     val usable: Boolean get() = problems.isEmpty()
 }
 
+/**
+ * The verdict of a keybox. `defect` says why the file is not a well-formed keybox, when the
+ * engine recovered its keys from broken markup: a keystore daemon reads no key from such a file.
+ */
 @Serializable
-data class KeyboxVerdict(val keys: List<KeyVerdict> = emptyList(), val revocationChecked: Boolean = false) {
+data class KeyboxVerdict(val keys: List<KeyVerdict> = emptyList(), val revocationChecked: Boolean = false, val defect: String? = null) {
     val usableKeys: Int get() = keys.count { it.usable }
 
     /** Whether a usable key of `algorithm` (ECDSA or RSA) is present. */
     fun hasUsable(algorithm: String): Boolean = keys.any { it.algorithm.equals(algorithm, ignoreCase = true) && it.usable }
 
-    /** Whether the keybox can reach STRONG: a usable EC key and a usable RSA key. */
-    val strongCapable: Boolean get() = hasUsable(ECDSA) && hasUsable(RSA)
+    /**
+     * Whether the keybox can reach STRONG: a usable EC key, in a file the daemon can read. Play
+     * Integrity attests with EC; TEESimulator-RS signs RSA requests with the EC key when there
+     * is no RSA key, so an RSA key is not needed (`KeyboxVerdict::is_strong_capable`).
+     */
+    val strongCapable: Boolean get() = defect == null && hasUsable(ECDSA)
+
+    /**
+     * Whether the keybox reaches STRONG once installed: a usable EC key. An offered keybox with
+     * a `defect` is written again as a well-formed one when it is installed, so its markup does
+     * not count, as in the engine's `KeyboxVerdict::rank`.
+     */
+    val strongCapableOnceInstalled: Boolean get() = hasUsable(ECDSA)
 
     /** Whether any key is revoked: the keybox leaked and Google listed it. */
     val revoked: Boolean get() = keys.any { key -> key.problems.any { it.detail == Problem.DETAIL_REVOKED } }
@@ -222,6 +237,8 @@ data class EngineSettings(
     val extraPackages: List<String> = emptyList(),
     val excludedPackages: List<String> = emptyList(),
     val targetMode: TargetMode = TargetMode.AUTO,
+    /** The mode of the Play stack, which the engine defaults to generating its keys. */
+    val playTargetMode: TargetMode = TargetMode.GENERATE,
     val spoofOverrides: List<List<JsonElement>> = emptyList(),
 ) {
     /** The overrides by key; a malformed entry is left out. */
@@ -236,6 +253,7 @@ data class EngineSettings(
         extraPackages.toSet() == other.extraPackages.toSet() &&
             excludedPackages.toSet() == other.excludedPackages.toSet() &&
             targetMode == other.targetMode &&
+            playTargetMode == other.playTargetMode &&
             overrides() == other.overrides()
 
     companion object {
@@ -299,6 +317,8 @@ data class ApplyReport(
     val securityPatch: String? = null,
     val spoof: List<List<JsonElement>> = emptyList(),
     val staleKeysRemoved: Int = 0,
+    /** Whether the installed keybox was not well-formed and was written again. */
+    val keyboxRepaired: Boolean = false,
     val daemonRestarted: Boolean = false,
 )
 
@@ -307,6 +327,10 @@ data class InstallReport(
     val sha256: String,
     val changed: Boolean = false,
     val verdict: KeyboxVerdict? = null,
+    /** The keys of the offered keybox that were not written, because others are usable. */
+    val droppedKeys: Int = 0,
+    /** Why the offered file was not installed, when the installed keybox ranked higher. */
+    val declined: String? = null,
     val fingerprint: FingerprintReport? = null,
 )
 

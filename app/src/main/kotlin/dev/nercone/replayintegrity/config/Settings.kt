@@ -9,6 +9,7 @@ import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 /**
  * The preferences of the application, kept as one immutable value and stored as one JSON
@@ -32,8 +33,13 @@ class Settings(context: Context) {
         val autoKeybox: Boolean = true,
         /** Whether the fingerprint is downloaded and replaced on every refresh. */
         val autoFingerprint: Boolean = true,
-        /** Where the keybox is downloaded from (base64 of the keybox XML). */
+        /** Where the keybox is downloaded from (the keybox XML, or base64 of it). */
         val keyboxUrl: String = Downloader.DEFAULT_KEYBOX_URL,
+        /**
+         * More keybox sources, tried in order after `keyboxUrl` when it cannot be downloaded or
+         * serves a keybox that ranks below the installed one.
+         */
+        val extraKeyboxUrls: List<String> = emptyList(),
         /** Where the fingerprint is downloaded from (a `custom.pif.prop`). */
         val fingerprintUrl: String = Downloader.DEFAULT_FINGERPRINT_URL,
         /** Hours between scheduled refreshes; 0 turns them off. */
@@ -64,8 +70,10 @@ class Settings(context: Context) {
         val extraPackages: List<String> = emptyList(),
         /** Installed packages left out of the attestation targets. */
         val excludedPackages: List<String> = emptyList(),
-        /** How TEESimulator-RS handles the keys of every target. */
+        /** How TEESimulator-RS handles the keys of every target but the Play stack. */
         val targetMode: TargetMode = TargetMode.AUTO,
+        /** How TEESimulator-RS handles the keys of the Play stack; generating them is recommended. */
+        val playTargetMode: TargetMode = TargetMode.GENERATE,
         /** Overrides of the spoof flags, by key; a flag without one has its recommended value. */
         val spoofOverrides: Map<String, Boolean> = emptyMap(),
         /** When the last refresh finished, in milliseconds since the Unix epoch. */
@@ -73,18 +81,22 @@ class Settings(context: Context) {
         /** The problems of the last refresh; empty when it succeeded. */
         val lastRefreshProblems: List<String> = emptyList(),
     ) {
+        /** The keybox sources in the order they are tried: `keyboxUrl`, then `extraKeyboxUrls`. */
+        fun keyboxSources(): List<String> = (listOf(keyboxUrl) + extraKeyboxUrls).distinct()
+
         /** The part of the settings that the engine reads. */
         fun engine(): EngineSettings = EngineSettings(
             extraPackages = extraPackages,
             excludedPackages = excludedPackages,
             targetMode = targetMode,
+            playTargetMode = playTargetMode,
             spoofOverrides = spoofOverrides.map { (key, value) -> EngineSettings.override(key, value) },
         )
     }
 
     fun read(): Values {
         val text = preferences.getString(VALUES, null) ?: return Values()
-        return runCatching { JSON.decodeFromString(Values.serializer(), text) }.getOrDefault(Values())
+        return runCatching { decode(text) }.getOrDefault(Values())
     }
 
     /** Replaces the settings with `transform` of the current ones, and stores them. */
@@ -101,5 +113,16 @@ class Settings(context: Context) {
         const val DEFAULT_REFRESH_HOURS = 6
         val REFRESH_CHOICES = listOf(0, 3, 6, 12, 24)
         val JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true; coerceInputValues = true }
+
+        /**
+         * Decodes a stored document. A document written before `playTargetMode` existed gave the
+         * Play stack `targetMode`; a mode other than automatic was the user's choice, so the Play
+         * stack keeps it, as the engine's `Settings::parse` does.
+         */
+        fun decode(text: String): Values {
+            val values = JSON.decodeFromString(Values.serializer(), text)
+            val stored = JSON.parseToJsonElement(text).jsonObject
+            return if ("playTargetMode" !in stored && values.targetMode != TargetMode.AUTO) values.copy(playTargetMode = values.targetMode) else values
+        }
     }
 }
