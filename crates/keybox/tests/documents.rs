@@ -21,6 +21,25 @@ fn a_keybox_is_parsed_with_its_keys_and_chains() {
 }
 
 #[test]
+fn a_key_of_an_unknown_algorithm_is_skipped_not_fatal() {
+    // Mirrors add a watermark <Key> whose algorithm attribute is a handle, not an algorithm.
+    // Such a key is skipped: the keybox keeps its real keys instead of being rejected whole.
+    let watermark = "<Key algorithm=\"@evokerr\"></Key>";
+    let with_junk = TEST_KEYBOX.replacen("<Key algorithm=\"ecdsa\">", &format!("{watermark}\n{}", "<Key algorithm=\"ecdsa\">"), 1);
+    let document = KeyboxDocument::parse(&with_junk).unwrap();
+    let keys: Vec<_> = document.keys().collect();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0].algorithm, KeyAlgorithm::ECDSA);
+    assert_eq!(keys[1].algorithm, KeyAlgorithm::RSA);
+}
+
+#[test]
+fn a_keybox_of_only_unknown_algorithms_is_rejected() {
+    let only_junk = "<AndroidAttestation><Keybox><Key algorithm=\"@evokerr\"></Key></Keybox></AndroidAttestation>";
+    assert!(matches!(KeyboxDocument::parse(only_junk), Err(KeyboxError::Structure(_))));
+}
+
+#[test]
 fn a_wrong_declared_count_is_rejected() {
     let wrong = TEST_KEYBOX.replace("<NumberOfKeyboxes>1</NumberOfKeyboxes>", "<NumberOfKeyboxes>2</NumberOfKeyboxes>");
     assert!(matches!(KeyboxDocument::parse(&wrong), Err(KeyboxError::Structure(_))));

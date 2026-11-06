@@ -80,16 +80,21 @@ impl KeyboxDocument {
     }
 
     fn keybox(node: &Node) -> Result<Keybox, KeyboxError> {
-        let keys = node.children_named("Key").map(KeyboxDocument::key).collect::<Result<Vec<_>, _>>()?;
+        let keys = node.children_named("Key").filter_map(|key| KeyboxDocument::key(key).transpose()).collect::<Result<Vec<_>, _>>()?;
         if keys.is_empty() {
-            return Err(KeyboxError::structure("a <Keybox> has no <Key>"));
+            return Err(KeyboxError::structure("a <Keybox> has no key of a known algorithm"));
         }
         Ok(Keybox { device_id: node.attribute("DeviceID").map(str::to_string), keys })
     }
 
-    fn key(node: &Node) -> Result<KeyboxKey, KeyboxError> {
+    /// Parses one `<Key>`. A key whose `algorithm` attribute names an algorithm the keybox
+    /// format does not define is not an attestation key this engine understands, so it is
+    /// skipped (`Ok(None)`) rather than failing the whole keybox: a mirror may add a watermark
+    /// `<Key>` of its own, and a keybox that still has a usable key is weak, not broken. A key of
+    /// a known algorithm that is malformed stays a genuine error.
+    fn key(node: &Node) -> Result<Option<KeyboxKey>, KeyboxError> {
         let name = node.attribute("algorithm").ok_or_else(|| KeyboxError::structure("a <Key> has no algorithm"))?;
-        let algorithm = KeyAlgorithm::parse(name).ok_or_else(|| KeyboxError::structure(format!("an unknown key algorithm \"{name}\"")))?;
+        let Some(algorithm) = KeyAlgorithm::parse(name) else { return Ok(None) };
         let private = node.child("PrivateKey").ok_or_else(|| KeyboxError::structure("a <Key> has no <PrivateKey>"))?;
         let blocks = Pem::parse_all(&private.text)?;
         let [block] = blocks.as_slice() else { return Err(KeyboxError::structure("a <PrivateKey> does not hold exactly one PEM block")) };
@@ -119,7 +124,7 @@ impl KeyboxDocument {
                 return Err(KeyboxError::structure(format!("<NumberOfCertificates> is {declared}, but there are {} certificates", certificates.len())));
             }
         }
-        Ok(KeyboxKey { algorithm, private_key, certificates })
+        Ok(Some(KeyboxKey { algorithm, private_key, certificates }))
     }
 
     /// Every key of every keybox.
