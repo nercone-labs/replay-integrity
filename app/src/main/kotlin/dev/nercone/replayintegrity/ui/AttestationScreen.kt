@@ -50,7 +50,8 @@ import dev.nercone.replayintegrity.engine.StatusReport
 object AttestationScreen {
     /** The MIME types offered when importing a keybox, a fingerprint or a module. */
     val KEYBOX_TYPES = arrayOf("text/xml", "application/xml", "text/plain", "application/octet-stream")
-    val FINGERPRINT_TYPES = arrayOf("text/plain", "application/octet-stream", "*/*")
+    /** A fingerprint is a `custom.pif.prop` or a `custom.pif.json`. */
+    val FINGERPRINT_TYPES = arrayOf("text/plain", "application/json", "application/octet-stream", "*/*")
     val MODULE_TYPES = arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
 
     @Composable
@@ -107,7 +108,7 @@ object AttestationScreen {
             Text(stringResource(R.string.spoof_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
 
             Widgets.Header(stringResource(R.string.section_modules))
-            Modules(status, idle) { component ->
+            Modules(status, idle, onDisableConflicts = model::disableConflicts) { component ->
                 module = component
                 modulePicker.launch(MODULE_TYPES)
             }
@@ -228,7 +229,7 @@ object AttestationScreen {
     fun onOff(value: Boolean): String = stringResource(if (value) R.string.on else R.string.off)
 
     @Composable
-    fun Modules(status: StatusReport?, idle: Boolean, onInstall: (Component) -> Unit) {
+    fun Modules(status: StatusReport?, idle: Boolean, onDisableConflicts: () -> Unit, onInstall: (Component) -> Unit) {
         val context = LocalContext.current
         Widgets.Group {
             Component.entries.forEachIndexed { index, component ->
@@ -272,7 +273,10 @@ object AttestationScreen {
             }
         }
         status?.conflicts?.takeIf { it.isNotEmpty() }?.let { conflicts ->
-            Widgets.Notice(Widgets.Tone.ERROR, stringResource(R.string.check_conflicts), conflicts.joinToString("\n") { "${it.name ?: it.id} (${it.id})" })
+            val text = conflicts.joinToString("\n") { "${it.name ?: it.id} (${it.id})" } + "\n" + stringResource(R.string.conflicts_disable_help)
+            Widgets.Notice(Widgets.Tone.ERROR, stringResource(R.string.check_conflicts), text) {
+                TextButton(onClick = onDisableConflicts, enabled = idle) { Text(stringResource(R.string.conflicts_disable)) }
+            }
         }
     }
 

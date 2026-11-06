@@ -47,6 +47,11 @@ class Settings(context: Context) {
         val restartOnChange: Boolean = true,
         /** Whether the root manager runs the engine at every boot, before the framework starts. */
         val bootHook: Boolean = true,
+        /**
+         * Whether the boot hook also runs the package watcher, which rebuilds the target list as
+         * soon as an application is installed or removed, instead of at the next refresh.
+         */
+        val watchPackages: Boolean = true,
         /** Whether the application repairs after every boot, once the system has started. */
         val repairAfterBoot: Boolean = true,
         /** Whether a failure of a scheduled or boot run is notified. */

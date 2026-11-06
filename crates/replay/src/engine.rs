@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::{
     BootHook, Component, ComponentState, Conflicts, DaemonState, Files, Fingerprint, FingerprintReport, KeystoreConfig, KeystoreDaemon, Layout, Log, Module,
-    PatchDate, PersistedKey, ReplayError, RootManager, Settings, Store, TargetList, Verifier, Zygisk, store::InstalledFile, store::State,
-    verify::KeyboxVerdict,
+    PackageWatcher, PatchDate, PersistedKey, ReplayError, RootManager, Settings, Store, TargetList, Verifier, WatchReport, Zygisk, store::InstalledFile,
+    store::State, verify::KeyboxVerdict,
 };
 
 /// The packages whose Play Integrity state must be refreshed for a new keybox or fingerprint to
@@ -165,7 +165,7 @@ impl Engine {
     }
 
     pub fn inspect_fingerprint(&mut self, bytes: &[u8]) -> Result<FingerprintReport, ReplayError> {
-        Ok(Fingerprint::parse(&Engine::text(bytes, "fingerprint")?).report(Engine::now().seconds))
+        Ok(Fingerprint::read(&Engine::text(bytes, "fingerprint")?)?.report(Engine::now().seconds))
     }
 
     /// Installs a keybox after checking it: it must parse and have at least one key, and no
@@ -194,11 +194,11 @@ impl Engine {
         Ok(InstallReport { sha256, changed, verdict: Some(verdict), fingerprint: None })
     }
 
-    /// Installs a fingerprint after checking it has no problems. It is kept in the store as it
-    /// is, and written with the spoof flags of `settings` and its security patch where
+    /// Installs a fingerprint (`custom.pif.prop`, or `custom.pif.json` converted to it) after
+    /// checking it has no problems. It is kept in the store in the prop format, and written with the spoof flags of `settings` and its security patch where
     /// PlayIntegrityFork and TEESimulator-RS read them.
     pub fn install_fingerprint(&mut self, bytes: &[u8], source: Option<String>, settings: &Settings) -> Result<InstallReport, ReplayError> {
-        let fingerprint = Fingerprint::parse(&Engine::text(bytes, "fingerprint")?);
+        let fingerprint = Fingerprint::read(&Engine::text(bytes, "fingerprint")?)?;
         let report = fingerprint.report(Engine::now().seconds);
         if !report.problems.is_empty() {
             return Err(ReplayError::Rejected(vec!["the fingerprint has problems (see the report)".to_string()]));
@@ -226,7 +226,7 @@ impl Engine {
     }
 
     /// Writes the fingerprint to the `custom.pif.prop` of the PlayIntegrityFork module, if it
-    /// is installed. Returns whether it was written.
+    /// is installed and the file differs. Returns whether the module is installed.
     fn write_integrity_fingerprint(&mut self, fingerprint: &Fingerprint) -> Result<bool, ReplayError> {
         let path = self.config.custom_pif();
         let Some(directory) = path.parent() else { return Ok(false) };
@@ -234,24 +234,28 @@ impl Engine {
             self.log.warning("PlayIntegrityFork is not installed; its custom.pif.prop is not written");
             return Ok(false);
         }
-        Files::write_atomic(&path, fingerprint.file.render().as_bytes(), KeystoreConfig::CONFIG_MODE)?;
+        Files::write_if_changed(&path, fingerprint.file.render().as_bytes(), KeystoreConfig::CONFIG_MODE)?;
         Ok(true)
     }
 
     fn write_security_patch(&mut self, patch: PatchDate) -> Result<(), ReplayError> {
         Files::create_directory(&self.layout.tricky_store(), BootHook::DIRECTORY_MODE)?;
-        Files::write_atomic(&self.config.security_patch(), KeystoreConfig::security_patch_contents(patch).as_bytes(), KeystoreConfig::CONFIG_MODE)
+        let contents = KeystoreConfig::security_patch_contents(patch);
+        Files::write_if_changed(&self.config.security_patch(), contents.as_bytes(), KeystoreConfig::CONFIG_MODE).map(|_| ())
     }
 
-    /// Builds and writes `target.txt` from the installed packages and `settings`. It needs a
-    /// working package manager: a failure leaves `target.txt` as it is, rather than replacing it
-    /// with a list that lacks the installed applications.
+    /// Builds `target.txt` from the installed packages and `settings`, and writes it when it
+    /// differs from the file on disk. It needs a working package manager: a failure leaves
+    /// `target.txt` as it is, rather than replacing it with a list that lacks the installed
+    /// applications.
     pub fn build_targets(&mut self, settings: &Settings) -> Result<TargetList, ReplayError> {
         let installed = PackageManager::installed()?;
         let third_party = PackageManager::third_party()?;
         let list = TargetList::build(&installed, &third_party, settings);
         Files::create_directory(&self.layout.tricky_store(), BootHook::DIRECTORY_MODE)?;
-        Files::write_atomic(&self.config.target(), list.render().as_bytes(), KeystoreConfig::CONFIG_MODE)?;
+        if Files::write_if_changed(&self.config.target(), list.render().as_bytes(), KeystoreConfig::CONFIG_MODE)? {
+            self.log.info(format!("target.txt now lists {} package(s)", list.targets.len()));
+        }
         Ok(list)
     }
 
@@ -351,6 +355,7 @@ impl Engine {
     /// persisted keys, and restarts as `mode` says. This is what keeps the verdict from
     /// drifting after the modules' own scripts run.
     pub fn apply(&mut self, settings: &Settings, mode: ApplyMode) -> Result<ApplyReport, ReplayError> {
+        let _lock = self.store.lock_apply()?;
         if mode != ApplyMode::EarlyBoot {
             self.store.save_settings(settings)?;
         }
@@ -430,10 +435,87 @@ impl Engine {
         manager.install_module(&self.layout, zip)
     }
 
-    /// Installs the boot hook for `package`, with a copy of the running engine.
-    pub fn install_hook(&mut self, package: &str) -> Result<BootHook, ReplayError> {
+    /// Disables the active conflicting modules (`Conflicts::disable`); they stop running at the
+    /// next boot. Returns them as they are afterwards.
+    pub fn disable_conflicts(&mut self) -> Result<Vec<Module>, ReplayError> {
+        let disabled = Conflicts::disable(&self.layout)?;
+        for module in &disabled {
+            self.log.info(format!("disabled the conflicting module {} from the next boot", module.id));
+        }
+        Ok(disabled)
+    }
+
+    /// Installs the boot hook for `package`, with a copy of the running engine. With `watch`,
+    /// the hook also starts the package watcher at every boot, and the watcher is started now
+    /// when it does not run, so that it works without a reboot.
+    pub fn install_hook(&mut self, package: &str, watch: bool) -> Result<BootHook, ReplayError> {
         let executable = std::env::current_exe().map_err(|error| ReplayError::io("find the engine executable", error))?;
-        BootHook::install(&self.layout, &executable, package)
+        let hook = BootHook::install(&self.layout, &executable, package, watch)?;
+        if watch && hook.is_installed() && PackageWatcher::new(&self.layout).start(package)? {
+            self.log.info("started the package watcher");
+            return Ok(BootHook::current(&self.layout));
+        }
+        Ok(hook)
+    }
+
+    /// Runs the package watcher (`PackageWatcher`) for the application `package` until the
+    /// application is uninstalled or the boot hook is removed: once the system has booted, it
+    /// rebuilds `target.txt` with the saved settings, then again after every change of the
+    /// package list. A rebuild that fails is logged and the watcher goes on; the next change,
+    /// or the next refresh of the application, tries again.
+    pub fn watch(&mut self, package: &str, watcher: &PackageWatcher) -> Result<WatchReport, ReplayError> {
+        Engine::require_root()?;
+        let Some(_lock) = watcher.lock()? else {
+            return Ok(WatchReport::AlreadyRunning { pid: watcher.running() });
+        };
+        watcher.detach();
+        while !android::SystemProperty::is_boot_completed() {
+            std::thread::sleep(watcher.boot_poll);
+        }
+        let list = self.layout.packages_list();
+        let mut watch = android::FileWatch::new(&list).map_err(|error| ReplayError::io_at("watch", &list, error))?;
+        self.log.info(format!("watching {} for installed and removed applications", self.layout.device_path(&list).display()));
+        loop {
+            if let Some(report) = self.watch_step(package)? {
+                return Ok(report);
+            }
+            // The lines were written to the log file; keeping them would grow without bound.
+            self.log.lines.clear();
+            watch.wait().map_err(|error| ReplayError::io_at("watch", &list, error))?;
+            std::thread::sleep(watcher.settle);
+            watch.take_pending().map_err(|error| ReplayError::io_at("watch", &list, error))?;
+        }
+    }
+
+    /// One round of the package watcher: ends it when the application was uninstalled (removing
+    /// the boot hook) or the boot hook removed, and rebuilds `target.txt` otherwise.
+    ///
+    /// While the system runs, `packages.list` also leaves out applications whose storage is
+    /// unmounted (an ejected adopted card), so an absence there is confirmed with the package
+    /// manager before the hook is removed; when the package manager cannot answer, nothing is
+    /// removed.
+    fn watch_step(&mut self, package: &str) -> Result<Option<WatchReport>, ReplayError> {
+        if !Engine::is_package_present(&self.layout, package)
+            && PackageManager::installed().is_ok_and(|installed| !installed.iter().any(|name| name == package))
+        {
+            self.log.warning(format!("{package} is uninstalled; the boot hook removes itself"));
+            BootHook::remove(&self.layout)?;
+            return Ok(Some(WatchReport::Uninstalled));
+        }
+        if !BootHook::current(&self.layout).watches {
+            self.log.info("the service script of the boot hook was removed; the package watcher ends");
+            return Ok(Some(WatchReport::Stopped));
+        }
+        let _lock = self.store.lock_apply()?;
+        match self.store.settings() {
+            Ok(settings) => {
+                if let Err(error) = self.build_targets(&settings) {
+                    self.log.warning(format!("target.txt is kept as it is: {error}"));
+                }
+            }
+            Err(error) => self.log.warning(format!("the saved settings cannot be read; target.txt is kept as it is: {error}")),
+        }
+        Ok(None)
     }
 
     pub fn remove_hook(&mut self) -> Result<BootHook, ReplayError> {

@@ -199,8 +199,17 @@ data class DaemonState(val daemons: List<Long> = emptyList(), val supervisors: L
     val running: Boolean get() = daemons.isNotEmpty()
 }
 
+/**
+ * The boot scripts, mirroring the Rust `BootHook`: `watches` says whether the service script that
+ * starts the package watcher is installed, and `watcher` is the process ID of the running watcher.
+ */
 @Serializable
-data class BootHook(val managers: List<RootManager> = emptyList(), val scripts: List<String> = emptyList()) {
+data class BootHook(
+    val managers: List<RootManager> = emptyList(),
+    val scripts: List<String> = emptyList(),
+    val watches: Boolean = false,
+    val watcher: Long? = null,
+) {
     val installed: Boolean get() = scripts.isNotEmpty()
 }
 

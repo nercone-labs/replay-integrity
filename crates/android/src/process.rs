@@ -20,6 +20,22 @@ impl ProcessInfo {
         Some(ProcessInfo { pid, name: ProcessInfo::name_of(&cmdline) })
     }
 
+    /// The command-line arguments of the process with `pid`, or `None` if it is gone or cannot
+    /// be read. They stay readable after the executable file was replaced or removed, unlike
+    /// the path of `executable`.
+    pub fn arguments(pid: u32) -> Option<Vec<String>> {
+        Some(ProcessInfo::arguments_of(&fs::read(format!("/proc/{pid}/cmdline")).ok()?))
+    }
+
+    /// The arguments of a NUL-separated command line (`/proc/<pid>/cmdline`).
+    pub fn arguments_of(cmdline: &[u8]) -> Vec<String> {
+        let cmdline = cmdline.strip_suffix(&[0]).unwrap_or(cmdline);
+        if cmdline.is_empty() {
+            return Vec::new();
+        }
+        cmdline.split(|byte| *byte == 0).map(|argument| String::from_utf8_lossy(argument).into_owned()).collect()
+    }
+
     /// The first argument of a NUL-separated command line, without trailing padding.
     pub fn name_of(cmdline: &[u8]) -> String {
         let end = cmdline.iter().position(|byte| *byte == 0).unwrap_or(cmdline.len());

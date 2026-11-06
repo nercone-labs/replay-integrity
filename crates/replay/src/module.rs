@@ -27,6 +27,13 @@ pub struct Module {
 }
 
 impl Module {
+    pub const PROP: &'static str = "module.prop";
+    /// The marker that disables a module from the next boot.
+    pub const DISABLE: &'static str = "disable";
+    /// The marker that removes a module at the next boot.
+    pub const REMOVE: &'static str = "remove";
+    pub const MARKER_MODE: u32 = 0o644;
+
     /// Whether `id` is a valid module ID, as the root managers require: a letter, then
     /// letters, digits, `.`, `_` and `-`.
     pub fn is_id(id: &str) -> bool {
@@ -42,8 +49,8 @@ impl Module {
         }
         let installed = layout.modules().join(id);
         let update = layout.modules_update().join(id);
-        let update_pending = update.join("module.prop").is_file();
-        let is_installed = installed.join("module.prop").is_file();
+        let update_pending = update.join(Module::PROP).is_file();
+        let is_installed = installed.join(Module::PROP).is_file();
         let directory = if is_installed {
             installed
         } else if update_pending {
@@ -51,7 +58,7 @@ impl Module {
         } else {
             return None;
         };
-        let properties = PropFile::parse(&std::fs::read_to_string(directory.join("module.prop")).ok()?);
+        let properties = PropFile::parse(&std::fs::read_to_string(directory.join(Module::PROP)).ok()?);
         let text = |key: &str| properties.get(key).map(str::to_string);
         Some(Module {
             id: id.to_string(),
@@ -60,8 +67,8 @@ impl Module {
             version_code: properties.get("versionCode").and_then(|code| code.parse().ok()),
             author: text("author"),
             installed: is_installed,
-            disabled: directory.join("disable").exists(),
-            removing: directory.join("remove").exists(),
+            disabled: directory.join(Module::DISABLE).exists(),
+            removing: directory.join(Module::REMOVE).exists(),
             update_pending,
             directory,
         })

@@ -17,10 +17,12 @@ impl Files {
 
     /// Writes `bytes` to `path` with `mode`: a temporary file in the same directory is written,
     /// synchronized and renamed over `path`, so readers see the old or the new file, never a
-    /// part of one.
+    /// part of one. The temporary file is named after the process, so that two processes that
+    /// write the same file at once (the package watcher and an `apply`) never rename each
+    /// other's partly written file into place: the last rename wins with a whole file.
     pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), ReplayError> {
         let name = path.file_name().ok_or_else(|| ReplayError::refused(format!("{} is not a file path", path.display())))?;
-        let temporary = path.with_file_name(format!("{}{}", name.to_string_lossy(), Files::TEMPORARY_SUFFIX));
+        let temporary = path.with_file_name(format!("{}.{}{}", name.to_string_lossy(), std::process::id(), Files::TEMPORARY_SUFFIX));
         let result = (|| -> io::Result<()> {
             let _ = fs::remove_file(&temporary);
             let mut file = OpenOptions::new().write(true).create_new(true).mode(mode).open(&temporary)?;
@@ -32,12 +34,66 @@ impl Files {
             if let Some(directory) = path.parent() {
                 File::open(directory)?.sync_all()?;
             }
+            Files::remove_orphans(path);
             Ok(())
         })();
         result.map_err(|error| {
             let _ = fs::remove_file(&temporary);
             ReplayError::io_at("write", path, error)
         })
+    }
+
+    /// Removes the temporary files of `path` that processes which no longer run left behind
+    /// (a writer killed between writing and renaming). Best effort: a file that cannot be
+    /// listed or removed is left alone, and so is that of a running process.
+    fn remove_orphans(path: &Path) {
+        let (Some(directory), Some(name)) = (path.parent(), path.file_name()) else { return };
+        let prefix = format!("{}.", name.to_string_lossy());
+        let Ok(entries) = fs::read_dir(directory) else { return };
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            let Some(pid) = file_name.strip_prefix(&prefix).and_then(|rest| rest.strip_suffix(Files::TEMPORARY_SUFFIX)) else { continue };
+            let Ok(pid) = pid.parse::<u32>() else { continue };
+            if pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists() {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Takes an exclusive lock on `path` (created with `mode` if missing), waiting while another
+    /// process holds it. The lock is held until the returned file is closed, which the kernel
+    /// does when the process ends, however it ends.
+    pub fn lock(path: &Path, mode: u32) -> Result<File, ReplayError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(mode)
+            .open(path)
+            .map_err(|error| ReplayError::io_at("open", path, error))?;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        loop {
+            match rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive) {
+                Ok(()) => break,
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(ReplayError::io_at("lock", path, error.into())),
+            }
+        }
+        Ok(file)
+    }
+
+    /// Writes `bytes` to `path` as `write_atomic` does, unless `path` already holds exactly
+    /// `bytes`. Programs that watch the file (TEESimulator-RS reloads `target.txt` and
+    /// `security_patch.txt` when they are written) then see a write only when something changed.
+    /// Returns whether the file was written.
+    pub fn write_if_changed(path: &Path, bytes: &[u8], mode: u32) -> Result<bool, ReplayError> {
+        if Files::read_optional(path)?.as_deref() == Some(bytes) {
+            return Ok(false);
+        }
+        Files::write_atomic(path, bytes, mode)?;
+        Ok(true)
     }
 
     /// Creates `path` and its parents if missing, giving a created directory `mode`.

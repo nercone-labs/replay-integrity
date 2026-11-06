@@ -236,3 +236,17 @@ fn uids_combine_users_and_application_ids() {
     assert_eq!(PackageList::uid(10, 10145), 1_010_145);
     assert_eq!(PackageList::app_id(1_010_145), 10145);
 }
+
+#[test]
+fn command_lines_split_into_their_arguments() {
+    // `/proc/<pid>/cmdline` ends every argument with a NUL.
+    assert_eq!(
+        ProcessInfo::arguments_of(b"/data/adb/replay-integrity/replay\0watch\0--package\0a.b\0"),
+        ["/data/adb/replay-integrity/replay", "watch", "--package", "a.b"]
+    );
+    // An empty argument is kept; a process without a command line (a kernel thread) has none.
+    assert_eq!(ProcessInfo::arguments_of(b"sh\0\0x\0"), ["sh", "", "x"]);
+    assert!(ProcessInfo::arguments_of(b"").is_empty());
+    // A process that rewrote its command line may lack the final NUL.
+    assert_eq!(ProcessInfo::arguments_of(b"name"), ["name"]);
+}

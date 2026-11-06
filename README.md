@@ -22,6 +22,8 @@ A fresh `STRONG` setup tends to drop to `DEVICE`, then `BASIC`, within a few day
 3. **The modules' own refresh scripts reset the spoof flags.** Replay Integrity re-applies the flags that reach `STRONG` after every change.
 4. **Stale per-application keys.** This is the subtle one. TEESimulator keeps the keys it generates for each app, together with the certificate chain it attested them with. When the keybox changes, those apps keep receiving a chain built from the **old** keybox — so once the old keybox is revoked or expires, their attestation fails even though a valid keybox is installed. Reinstalling the module "fixes" it only because it wipes those keys. Replay Integrity finds the keys whose chains were signed by a key no longer in the keybox and removes them, so the app regenerates them against the current keybox. This is `Repair`, and it runs at every boot and on a schedule.
 
+Between those runs, a package watcher started by the boot hook adds an application to the attestation targets as soon as it is installed, and the app can disable modules that conflict with the two above.
+
 ## How it is built
 
 Like [TypeFace Droplet](https://github.com/nercone-labs/typeface-droplet), the app is split into a small GUI (Kotlin, Material 3 Expressive) and a core engine (Rust), with the trust-critical work in the engine:

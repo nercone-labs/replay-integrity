@@ -78,6 +78,8 @@
     <string name="outcome_not_restarted_text">The keystore daemon is not running, so it was not restarted. Reboot the device.</string>
     <string name="outcome_module">Module installed</string>
     <string name="outcome_module_text">Reboot the device to start the module.</string>
+    <string name="outcome_conflicts_disabled">Conflicting modules disabled</string>
+    <string name="outcome_conflicts_disabled_text">Reboot the device for this to take effect.</string>
     <string name="outcome_failed">Failed</string>
     <string name="summary_restarted">The keystore and Play services were restarted.</string>
     <string name="summary_not_restarted">Nothing was restarted.</string>
@@ -89,6 +91,9 @@
     <string name="check_keys">Per-app keys</string>
     <string name="check_daemon">Keystore daemon</string>
     <string name="check_conflicts">Conflicts</string>
+    <string name="conflicts_disable">Disable</string>
+    <string name="conflict_disabled_module">%1$s (%2$s)</string>
+    <string name="conflicts_disable_help">Disabling stops them from the next boot. Their files stay, and they can be enabled again in the root manager.</string>
     <string name="check_boot">At boot</string>
     <string name="component_keystore">Key attestation</string>
     <string name="component_integrity">Build spoof</string>
@@ -264,6 +269,9 @@
     <string name="settings_boot_hook">Repair at every boot</string>
     <string name="settings_boot_hook_help">The root manager runs the engine before the keystore daemon starts: stale keys are removed and the spoof flags re-applied.</string>
     <string name="settings_boot_hook_pending">Installed for %1$s at the next refresh or repair</string>
+    <string name="settings_watch_packages">Add new apps at once</string>
+    <string name="settings_watch_packages_help">While the system runs, the engine adds an app to the attestation targets as soon as it is installed, instead of at the next refresh.</string>
+    <string name="settings_watch_packages_running">Running: installed and removed apps update the attestation targets at once.</string>
     <string name="settings_repair_after_boot">Repair after every boot</string>
     <string name="settings_repair_after_boot_help">Once the system has started, this application rebuilds the target list and repairs again.</string>
     <string name="settings_notifications">Notifications</string>
@@ -289,6 +297,7 @@
     <string name="operation_installing">Installing…</string>
     <string name="operation_installing_module">Installing the module…</string>
     <string name="operation_configuring_boot">Configuring the boot hook…</string>
+    <string name="operation_disabling_conflicts">Disabling conflicting modules…</string>
     <string name="boot_failed">Could not repair after the boot: %1$s</string>
     <string name="refresh_failed">The scheduled refresh failed:\n%1$s</string>
     <plurals name="summary_targets">

@@ -13,6 +13,7 @@ import dev.nercone.replayintegrity.config.Settings
 import dev.nercone.replayintegrity.engine.Component
 import dev.nercone.replayintegrity.engine.EngineException
 import dev.nercone.replayintegrity.engine.LogLine
+import dev.nercone.replayintegrity.engine.Module
 import dev.nercone.replayintegrity.engine.StatusReport
 import dev.nercone.replayintegrity.engine.TargetMode
 import dev.nercone.replayintegrity.net.Downloader
@@ -27,7 +28,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** An operation the user started, shown while it runs. Only one runs at a time. */
-enum class Operation { PREPARING, CHECKING, REFRESHING, REPAIRING, RESTARTING, INSPECTING, INSTALLING, INSTALLING_MODULE, CONFIGURING_BOOT }
+enum class Operation { PREPARING, CHECKING, REFRESHING, REPAIRING, RESTARTING, INSPECTING, INSTALLING, INSTALLING_MODULE, CONFIGURING_BOOT, DISABLING_CONFLICTS }
 
 /** What the user is told about the last operation. */
 sealed interface Outcome {
@@ -36,6 +37,7 @@ sealed interface Outcome {
     data class Installed(val repaired: Replay.Repaired) : Outcome
     data class Restarted(val restarted: Boolean) : Outcome
     data class ModuleInstalled(val output: String) : Outcome
+    data class ConflictsDisabled(val modules: List<Module>) : Outcome
 
     /** `kind` is the kind of the engine error, such as `restricted`, or `null` for other errors. */
     data class Failed(val text: String, val kind: String?) : Outcome {
@@ -167,6 +169,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         check()
     }
 
+    fun disableConflicts() = run(Operation.DISABLING_CONFLICTS) {
+        val result = replay.disableConflicts()
+        state.update { it.copy(outcome = Outcome.ConflictsDisabled(result.value), log = result.log) }
+        check()
+    }
+
     /** Loads the installed applications once, for the labels of the target list. */
     fun loadApps() {
         if (state.value.apps != null) return
@@ -189,6 +197,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setBootHook(enabled: Boolean) = run(Operation.CONFIGURING_BOOT) {
         val result = replay.setBootHook(enabled)
+        state.update { it.copy(log = result.log) }
+        check()
+    }
+
+    fun setWatchPackages(enabled: Boolean) = run(Operation.CONFIGURING_BOOT) {
+        val result = replay.setWatchPackages(enabled)
         state.update { it.copy(log = result.log) }
         check()
     }

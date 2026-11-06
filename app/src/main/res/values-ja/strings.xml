@@ -78,6 +78,8 @@
     <string name="outcome_not_restarted_text">キーストアデーモンが動いていないため、再起動しませんでした。端末を再起動してください。</string>
     <string name="outcome_module">モジュールをインストールしました</string>
     <string name="outcome_module_text">モジュールを有効にするには端末を再起動してください。</string>
+    <string name="outcome_conflicts_disabled">競合するモジュールを無効にしました</string>
+    <string name="outcome_conflicts_disabled_text">反映するには端末を再起動してください。</string>
     <string name="outcome_failed">失敗しました</string>
     <string name="summary_restarted">キーストアと Play 開発者サービスを再起動しました。</string>
     <string name="summary_not_restarted">再起動は行いませんでした。</string>
@@ -89,6 +91,9 @@
     <string name="check_keys">アプリごとの鍵</string>
     <string name="check_daemon">キーストアデーモン</string>
     <string name="check_conflicts">競合</string>
+    <string name="conflicts_disable">無効にする</string>
+    <string name="conflict_disabled_module">%1$s(%2$s)</string>
+    <string name="conflicts_disable_help">無効にしたモジュールは次回の起動から動作しません。ファイルは残り、root マネージャで再び有効にできます。</string>
     <string name="check_boot">起動時</string>
     <string name="component_keystore">鍵の構成証明</string>
     <string name="component_integrity">ビルド偽装</string>
@@ -264,6 +269,9 @@
     <string name="settings_boot_hook">起動のたびに修復</string>
     <string name="settings_boot_hook_help">キーストアデーモンの起動前に root マネージャがエンジンを実行し、古い鍵の削除と偽装フラグの再適用を行います。</string>
     <string name="settings_boot_hook_pending">次回の更新か修復で %1$s に導入されます</string>
+    <string name="settings_watch_packages">新しいアプリをすぐに追加</string>
+    <string name="settings_watch_packages_help">システムの動作中、アプリがインストールされるとすぐに、次回の更新を待たずに構成証明の対象へ追加します。</string>
+    <string name="settings_watch_packages_running">動作中: アプリのインストールと削除がすぐに構成証明の対象へ反映されます。</string>
     <string name="settings_repair_after_boot">起動後に毎回修復</string>
     <string name="settings_repair_after_boot_help">システムの起動完了後に、このアプリが対象アプリの一覧を作り直して再度修復します。</string>
     <string name="settings_notifications">通知</string>
@@ -289,6 +297,7 @@
     <string name="operation_installing">インストールしています…</string>
     <string name="operation_installing_module">モジュールをインストールしています…</string>
     <string name="operation_configuring_boot">ブートフックを設定しています…</string>
+    <string name="operation_disabling_conflicts">競合するモジュールを無効にしています…</string>
     <string name="boot_failed">起動後の修復に失敗しました:%1$s</string>
     <string name="refresh_failed">定期更新に失敗しました:\n%1$s</string>
     <plurals name="summary_targets">

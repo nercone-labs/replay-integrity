@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::{Layout, Module};
+use crate::{Files, Layout, Module, ReplayError};
 
 /// A module that Replay Integrity configures, and how it is recognized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -120,5 +120,24 @@ impl Conflicts {
 
     pub fn is_conflict(id: &str) -> bool {
         Conflicts::MODULES.contains(&id)
+    }
+
+    /// Disables every active conflicting module with the `disable` marker of the root managers,
+    /// which takes effect at the next boot. The marker is written to the installed module and to
+    /// a pending update of it, because the update replaces the installed directory at the next
+    /// boot. Disabling is chosen over removal (AlwaysStrong marks them for removal) because the
+    /// user can enable the module again in the root manager, and its files and settings stay.
+    /// Returns the modules as they are afterwards.
+    pub fn disable(layout: &Layout) -> Result<Vec<Module>, ReplayError> {
+        let mut disabled = Vec::new();
+        for module in Conflicts::active(layout) {
+            for directory in [layout.modules().join(&module.id), layout.modules_update().join(&module.id)] {
+                if directory.join(Module::PROP).is_file() {
+                    Files::write_atomic(&directory.join(Module::DISABLE), b"", Module::MARKER_MODE)?;
+                }
+            }
+            disabled.extend(Module::read(layout, &module.id));
+        }
+        Ok(disabled)
     }
 }

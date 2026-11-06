@@ -50,12 +50,18 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
   keybox came from, when it was installed and its hash. **Import keybox** checks a file of your
   own and shows the result before installing it.
 - **Fingerprint**: the spoofed build, device, security patch and estimated expiry. **Import
-  fingerprint** takes a `custom.pif.prop`.
+  fingerprint** takes a `custom.pif.prop`, or a `custom.pif.json` (the earlier format of
+  PlayIntegrityFork, which other tools still write), which is converted to the prop format; an
+  entry commented out with `//` stays commented out.
 - Importing a file turns off the automatic refresh of that file, so that it is kept.
 - **Spoof flags**: each flag can be left at its recommended value, or forced on or off. The value
   applied and the value the module reads now are shown; a red value was changed by another script.
 - **Modules**: name, version, author and state of both modules, with their releases and a zip
   installer.
+- **Conflicts**: modules that change the same things (other keystore simulators, other Play
+  Integrity fixes, tools that rewrite `target.txt`) are listed with a **Disable** button. It
+  marks them disabled in the root manager from the next boot; their files stay, and they can be
+  enabled again there. Reboot afterwards.
 
 ## Targets
 
@@ -71,6 +77,10 @@ applications are added automatically; Xposed managers are always left out.
 Changes to targets and spoof flags take effect when they are applied; the app shows a notice with
 **Apply now** until then.
 
+With **Add new apps at once** (Settings, Boot), an application installed while the system runs is
+added to `target.txt` within seconds, with the settings applied last; one removed is taken out.
+Without it, the list follows the installed applications at the next refresh or repair.
+
 ## Settings
 
 - **Privilege**: Automatic (Sui or Shizuku as root first, then `su`), Shizuku/Sui only, or `su` only.
@@ -81,7 +91,9 @@ Changes to targets and spoof flags take effect when they are applied; the app sh
 - **Applying**: whether a change restarts the keystore and ends the Play processes at once, and a
   button that restarts them now.
 - **Boot**: the boot hook (the root manager runs the engine before the keystore daemon starts),
-  and the repair the app runs once the system has started.
+  **Add new apps at once** (the boot hook also runs the package watcher, which updates the target
+  list when an application is installed or removed; it needs the boot hook), and the repair the
+  app runs once the system has started.
 - **Notifications**: whether failures of the boot repair and of scheduled refreshes are notified.
 
 ## Where the files are
@@ -89,8 +101,11 @@ Changes to targets and spoof flags take effect when they are applied; the app sh
 Replay Integrity writes the configuration the modules read: `keybox.xml`, `target.txt` and
 `security_patch.txt` under `/data/adb/tricky_store/`, and the module's `custom.pif.prop`. Its own
 data lives in `/data/adb/replay-integrity/`: its state, the settings applied last (which the boot
-hook applies), the installed fingerprint, the keybox replaced last, its log, and the copy of the
-engine that the boot hook runs.
+hook applies), the installed fingerprint, the keybox replaced last, its log, the copy of the
+engine that the boot hook runs, and the lock of the package watcher (`watch.lock`, which holds its
+process ID). The boot hook is `replay-integrity.sh` in `post-fs-data.d` (Magisk) or `post-mount.d`
+(KernelSU, APatch), and, for the package watcher, in `service.d`.
 
-When the app is uninstalled, the boot hook removes itself (and the engine copy) at the next boot.
+When the app is uninstalled, the boot hook removes itself (and the engine copy): the package
+watcher does so as soon as the package list changes, and the early script at the next boot.
 The module files stay, so the modules keep working with the last configuration.

@@ -12,6 +12,7 @@ import dev.nercone.replayintegrity.engine.FingerprintReport
 import dev.nercone.replayintegrity.engine.InstallReport
 import dev.nercone.replayintegrity.engine.KeyboxVerdict
 import dev.nercone.replayintegrity.engine.LogLine
+import dev.nercone.replayintegrity.engine.Module
 import dev.nercone.replayintegrity.engine.StatusReport
 import dev.nercone.replayintegrity.net.Downloader
 import dev.nercone.replayintegrity.privilege.Privilege
@@ -163,14 +164,24 @@ class Replay(val context: Context) {
         EngineResult(result.value.restarted, result.log)
     }
 
-    /** Installs or removes the boot hook as the settings say. */
-    suspend fun synchronizeHook(privilege: Privilege): EngineResult<BootHook> =
-        if (settings.values.value.bootHook) engine.installHook(privilege) else engine.removeHook(privilege)
+    /** Installs or removes the boot hook, with or without the package watcher, as the settings say. */
+    suspend fun synchronizeHook(privilege: Privilege): EngineResult<BootHook> {
+        val values = settings.values.value
+        return if (values.bootHook) engine.installHook(privilege, values.watchPackages) else engine.removeHook(privilege)
+    }
 
     suspend fun setBootHook(enabled: Boolean): EngineResult<BootHook> = operations.withLock {
         settings.update { it.copy(bootHook = enabled) }
         synchronizeHook(privilege())
     }
+
+    suspend fun setWatchPackages(enabled: Boolean): EngineResult<BootHook> = operations.withLock {
+        settings.update { it.copy(watchPackages = enabled) }
+        synchronizeHook(privilege())
+    }
+
+    /** Disables the conflicting modules; they stop running at the next boot. */
+    suspend fun disableConflicts(): EngineResult<List<Module>> = operations.withLock { engine.disableConflicts(privilege()) }
 
     /** Copies a file the user chose into the engine directory, refusing files larger than `limit`. */
     suspend fun copy(uri: Uri, name: String, limit: Int): File = withContext(Dispatchers.IO) {
