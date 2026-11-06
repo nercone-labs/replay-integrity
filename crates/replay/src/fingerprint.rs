@@ -1,7 +1,11 @@
-use prop::PropFile;
-use serde::Serialize;
+use std::fmt;
 
-use crate::PatchDate;
+use prop::{PropFile, PropLine};
+use serde::Serialize;
+use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
+use serde_json::Value;
+
+use crate::{PatchDate, ReplayError};
 
 /// A spoof flag of PlayIntegrityFork (`custom.pif.prop`, "Advanced Settings").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -127,8 +131,62 @@ impl Fingerprint {
     pub const EXPIRY_COMMENT: &'static str = "Estimated Expiry:";
     pub const SECURITY_PATCH_PROPERTY: &'static str = "ro.build.version.security_patch";
 
+    /// The prefix that comments out an entry of `custom.pif.json`, as `#` does in a prop file.
+    pub const JSON_COMMENT: &'static str = "//";
+
     pub fn parse(text: &str) -> Fingerprint {
         Fingerprint { file: PropFile::parse(text) }
+    }
+
+    /// Parses a fingerprint in either format PlayIntegrityFork reads: a `custom.pif.prop`, or
+    /// a `custom.pif.json` (its earlier format, which other tools still write), told apart by a
+    /// JSON object starting with `{`.
+    pub fn read(text: &str) -> Result<Fingerprint, ReplayError> {
+        if text.trim_start_matches('\u{feff}').trim_start().starts_with('{') { Fingerprint::from_json(text) } else { Ok(Fingerprint::parse(text)) }
+    }
+
+    /// Converts a `custom.pif.json` to the prop format, keeping the order of its entries: a
+    /// flat object whose values are strings, numbers, booleans (`1` or `0`, as the prop format
+    /// writes flags) or null (empty). A key starting with `//` is an entry commented out, which
+    /// becomes a `#` line. Anything that cannot be written as one `key=value` line is rejected,
+    /// so that the conversion cannot produce entries that were not in the file.
+    pub fn from_json(text: &str) -> Result<Fingerprint, ReplayError> {
+        let object: JsonObject = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+            .map_err(|error| ReplayError::Rejected(vec![format!("the fingerprint is not a JSON object: {error}")]))?;
+        let mut file = PropFile::default();
+        let mut problems = Vec::new();
+        for (key, value) in object.entries {
+            let value = match value {
+                Value::String(text) => text,
+                Value::Number(number) => number.to_string(),
+                Value::Bool(flag) => if flag { "1" } else { "0" }.to_string(),
+                Value::Null => String::new(),
+                Value::Array(_) | Value::Object(_) => {
+                    problems.push(format!("the value of \"{key}\" is not a single value"));
+                    continue;
+                }
+            };
+            let (name, commented) = match key.strip_prefix(Fingerprint::JSON_COMMENT) {
+                Some(name) => (name.trim(), true),
+                None => (key.trim(), false),
+            };
+            if !Fingerprint::is_entry(name, &value) {
+                problems.push(format!("\"{key}\" cannot be written as a property"));
+                continue;
+            }
+            file.lines.push(if commented {
+                PropLine::Other(format!("#{name}={value}"))
+            } else {
+                PropLine::Entry { key: name.to_string(), value: value.trim().to_string() }
+            });
+        }
+        if problems.is_empty() { Ok(Fingerprint { file }) } else { Err(ReplayError::Rejected(problems)) }
+    }
+
+    /// Whether `key=value` is one entry of a prop file that reads back as the same key and value.
+    fn is_entry(key: &str, value: &str) -> bool {
+        let line_break = |character: char| character == '\n' || character == '\r';
+        !key.is_empty() && !key.starts_with('#') && !key.contains('=') && !key.contains(line_break) && !value.contains(line_break)
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -237,5 +295,34 @@ impl Fingerprint {
             spoof: SpoofFlag::ALL.iter().filter_map(|flag| Some((flag.key().to_string(), self.file.get(flag.key())?.to_string()))).collect(),
             problems: self.problems(now),
         }
+    }
+}
+
+/// A JSON object with its entries in the order of the text; `serde_json::Map` sorts them.
+struct JsonObject {
+    entries: Vec<(String, Value)>,
+}
+
+impl<'de> Deserialize<'de> for JsonObject {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<JsonObject, D::Error> {
+        struct ObjectVisitor;
+
+        impl<'de> Visitor<'de> for ObjectVisitor {
+            type Value = JsonObject;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<JsonObject, A::Error> {
+                let mut entries = Vec::new();
+                while let Some(entry) = map.next_entry::<String, Value>()? {
+                    entries.push(entry);
+                }
+                Ok(JsonObject { entries })
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor).map_err(de::Error::custom)
     }
 }

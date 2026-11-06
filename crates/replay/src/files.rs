@@ -17,10 +17,12 @@ impl Files {
 
     /// Writes `bytes` to `path` with `mode`: a temporary file in the same directory is written,
     /// synchronized and renamed over `path`, so readers see the old or the new file, never a
-    /// part of one.
+    /// part of one. The temporary file is named after the process, so that two processes that
+    /// write the same file at once (the package watcher and an `apply`) never rename each
+    /// other's partly written file into place: the last rename wins with a whole file.
     pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), ReplayError> {
         let name = path.file_name().ok_or_else(|| ReplayError::refused(format!("{} is not a file path", path.display())))?;
-        let temporary = path.with_file_name(format!("{}{}", name.to_string_lossy(), Files::TEMPORARY_SUFFIX));
+        let temporary = path.with_file_name(format!("{}.{}{}", name.to_string_lossy(), std::process::id(), Files::TEMPORARY_SUFFIX));
         let result = (|| -> io::Result<()> {
             let _ = fs::remove_file(&temporary);
             let mut file = OpenOptions::new().write(true).create_new(true).mode(mode).open(&temporary)?;
@@ -38,6 +40,18 @@ impl Files {
             let _ = fs::remove_file(&temporary);
             ReplayError::io_at("write", path, error)
         })
+    }
+
+    /// Writes `bytes` to `path` as `write_atomic` does, unless `path` already holds exactly
+    /// `bytes`. Programs that watch the file (TEESimulator-RS reloads `target.txt` and
+    /// `security_patch.txt` when they are written) then see a write only when something changed.
+    /// Returns whether the file was written.
+    pub fn write_if_changed(path: &Path, bytes: &[u8], mode: u32) -> Result<bool, ReplayError> {
+        if Files::read_optional(path)?.as_deref() == Some(bytes) {
+            return Ok(false);
+        }
+        Files::write_atomic(path, bytes, mode)?;
+        Ok(true)
     }
 
     /// Creates `path` and its parents if missing, giving a created directory `mode`.

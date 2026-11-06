@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use replay::{ApplyMode, Component, Engine, Layout, LogLine, ReplayError, Settings};
+use replay::{ApplyMode, Component, Engine, Layout, LogLine, PackageWatcher, ReplayError, Settings};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -16,10 +16,12 @@ enum Command {
     Targets,
     Apply { mode: ApplyMode },
     Boot { package: String },
+    Watch { package: String },
     Restart,
     StaleKeys,
+    DisableConflicts,
     InstallModule { component: Component, zip: PathBuf },
-    InstallHook { package: String },
+    InstallHook { package: String, watch: bool },
     RemoveHook,
     Version,
 }
@@ -46,15 +48,15 @@ struct CommandLine {
 impl CommandLine {
     const USAGE: &'static str = "usage: replay status [--status STATUS.json]
        replay inspect-keybox <keybox.xml> [--status STATUS.json]
-       replay inspect-fingerprint <fingerprint.prop>
+       replay inspect-fingerprint <fingerprint.prop|fingerprint.json>
        replay install-keybox <keybox.xml> [--source TEXT] [--status STATUS.json]
-       replay install-fingerprint <fingerprint.prop> [--source TEXT] [--settings SETTINGS.json]
+       replay install-fingerprint <fingerprint.prop|fingerprint.json> [--source TEXT] [--settings SETTINGS.json]
        replay targets [--settings SETTINGS.json]
        replay apply [--no-restart] [--settings SETTINGS.json]
-       replay boot --package PACKAGE
-       replay restart | stale-keys | version
+       replay boot --package PACKAGE | replay watch --package PACKAGE
+       replay restart | stale-keys | disable-conflicts | version
        replay install-module <keystore|integrity> <module.zip>
-       replay hook install --package PACKAGE | replay hook remove
+       replay hook install --package PACKAGE [--no-watch] | replay hook remove
 options: --root DIR   the base directory, an absolute path (default /)";
 
     fn parse() -> Result<CommandLine, lexopt::Error> {
@@ -68,6 +70,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
         let mut source: Option<String> = None;
         let mut package: Option<String> = None;
         let mut no_restart = false;
+        let mut no_watch = false;
         while let Some(argument) = parser.next()? {
             match argument {
                 Long("root") => root = parser.value()?.parse()?,
@@ -76,6 +79,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
                 Long("source") => source = Some(parser.value()?.string()?),
                 Long("package") => package = Some(parser.value()?.string()?),
                 Long("no-restart") => no_restart = true,
+                Long("no-watch") => no_watch = true,
                 Value(value) if name.is_none() => name = Some(value.string()?),
                 Value(value) => positional.push(value.string()?),
                 _ => return Err(argument.unexpected()),
@@ -92,8 +96,10 @@ options: --root DIR   the base directory, an absolute path (default /)";
             Some("targets") => Command::Targets,
             Some("apply") => Command::Apply { mode: if no_restart { ApplyMode::NoRestart } else { ApplyMode::Restart } },
             Some("boot") => Command::Boot { package: required(package, "boot")? },
+            Some("watch") => Command::Watch { package: required(package, "watch")? },
             Some("restart") => Command::Restart,
             Some("stale-keys") => Command::StaleKeys,
+            Some("disable-conflicts") => Command::DisableConflicts,
             Some("install-module") => {
                 let component = match positional.first().map(String::as_str) {
                     Some("keystore") => Component::Keystore,
@@ -104,7 +110,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
                 Command::InstallModule { component, zip: zip.into() }
             }
             Some("hook") => match positional.first().map(String::as_str) {
-                Some("install") => Command::InstallHook { package: required(package, "hook install")? },
+                Some("install") => Command::InstallHook { package: required(package, "hook install")?, watch: !no_watch },
                 Some("remove") => Command::RemoveHook,
                 _ => return Err(lexopt::Error::from("hook needs install or remove")),
             },
@@ -178,18 +184,23 @@ options: --root DIR   the base directory, an absolute path (default /)";
                 CommandLine::json(&engine.apply(&self.settings()?, *mode)?)
             }
             Command::Boot { package } => CommandLine::json(&engine.boot(package)?),
+            Command::Watch { package } => CommandLine::json(&engine.watch(package, &PackageWatcher::new(&engine.layout))?),
             Command::Restart => {
                 Engine::require_root()?;
                 Ok(json!({ "restarted": engine.restart()? }))
             }
             Command::StaleKeys => CommandLine::json(&engine.stale_keys()?),
+            Command::DisableConflicts => {
+                Engine::require_root()?;
+                CommandLine::json(&engine.disable_conflicts()?)
+            }
             Command::InstallModule { component, zip } => {
                 Engine::require_root()?;
                 Ok(json!({ "output": engine.install_module(*component, &zip.to_string_lossy())? }))
             }
-            Command::InstallHook { package } => {
+            Command::InstallHook { package, watch } => {
                 Engine::require_root()?;
-                CommandLine::json(&engine.install_hook(package)?)
+                CommandLine::json(&engine.install_hook(package, *watch)?)
             }
             Command::RemoveHook => {
                 Engine::require_root()?;

@@ -34,7 +34,9 @@ pub struct LogLine {
 }
 
 /// The engine log: lines are kept for the command's report and appended to a file,
-/// which is rotated to `<file>.old` when it exceeds `Log::MAX_FILE_SIZE`.
+/// which is rotated to `<file>.old` when it exceeds `Log::MAX_FILE_SIZE`. The size is checked
+/// before every line, so that a command that runs for a long time (`watch`) cannot grow the
+/// file without bound.
 pub struct Log {
     file: Option<PathBuf>,
     pub lines: Vec<LogLine>,
@@ -44,12 +46,14 @@ impl Log {
     pub const MAX_FILE_SIZE: u64 = 64 * 1024;
 
     pub fn new(file: Option<PathBuf>) -> Log {
-        if let Some(path) = &file
-            && fs::metadata(path).is_ok_and(|metadata| metadata.len() > Log::MAX_FILE_SIZE)
-        {
+        Log { file, lines: Vec::new() }
+    }
+
+    /// Moves the file to `<file>.old` when it exceeds `Log::MAX_FILE_SIZE`.
+    fn rotate(path: &std::path::Path) {
+        if fs::metadata(path).is_ok_and(|metadata| metadata.len() > Log::MAX_FILE_SIZE) {
             let _ = fs::rename(path, path.with_extension("log.old"));
         }
-        Log { file, lines: Vec::new() }
     }
 
     pub fn now() -> u64 {
@@ -59,6 +63,7 @@ impl Log {
     pub fn write(&mut self, level: LogLevel, message: impl Into<String>) {
         let line = LogLine { time: Log::now(), level, message: message.into() };
         if let Some(path) = &self.file {
+            Log::rotate(path);
             // The log is diagnostic only; failing to write it must not fail the operation.
             if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
                 let _ = writeln!(file, "{} {} {}", line.time, line.level.name(), line.message);

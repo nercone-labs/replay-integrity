@@ -209,3 +209,100 @@ The device's own model, Android version, security patch and build fingerprint co
 comes from the engine (`ro.product.first_api_level` and its fallbacks), because the platform has
 no public API for it; reading the property by reflection from the app was rejected as relying on
 hidden APIs.
+
+## What was taken from AlwaysStrong, and what was not
+
+AlwaysStrong was reviewed for behaviour that keeps the verdict and that Replay Integrity lacked.
+Four pieces were taken over, each reshaped to fit the engine:
+
+- **The package watcher.** AlwaysStrong's `aswatcher` adds a newly installed application to
+  `target.txt` at once. Before, Replay Integrity rebuilt the list only on a refresh (every six
+  hours by default) or a repair, so an application installed in between, typically a bank's,
+  went without attestation for hours. See *The package watcher* below.
+- **Disabling conflicting modules.** AlwaysStrong marks conflicting modules for removal at
+  installation and at every boot. Replay Integrity only reported them. `disable-conflicts` now
+  writes the `disable` marker on request. It is a button, not something done at every boot,
+  because an app should not change other modules without the user. It disables rather than
+  removes, so the user can undo it in the root manager and loses no files or settings. The marker
+  goes into a pending update in `modules_update` too, because that directory replaces the
+  installed one at the next boot. Modules that hold a component's ID but are not the supported
+  module (`Flavor::Other`) are not disabled: that would leave no module in that place.
+- **`custom.pif.json` import.** AlwaysStrong's `import_pif.sh` accepts both formats of
+  PlayIntegrityFork. The engine converts the JSON to the prop format and keeps the order of the
+  entries (`serde_json::Map` sorts keys; a small visitor reads them in order rather than adding
+  the `preserve_order` feature and its dependency). A key with the `//` prefix, which comments out
+  an entry in that format, becomes a `#` line. A value or key that could not be written back as
+  exactly one `key=value` line (a line break, an `=` in the key, a nested value) rejects the whole
+  file, because converting it would add entries the file did not have.
+- **Writing only what changed.** TEESimulator-RS reloads `target.txt` and `security_patch.txt`,
+  and drops its patched certificate chains on a keybox write, whenever it sees one
+  (`FileObserver` on `CLOSE_WRITE` and `MOVED_TO`). `target.txt`, `security_patch.txt`,
+  `custom.pif.prop`, the boot scripts and the engine copy are now written only when their contents
+  differ (`Files::write_if_changed`). The keybox was already written only on a change.
+
+The rest was left out on purpose:
+
+- **Global property spoofing** (`resetprop` of the verified-boot, build-type and OEM warranty
+  properties, `prop_unify.sh`, the ROM spoof-engine block). PlayIntegrityFork does these in its
+  own `post-fs-data.sh`, `service.sh` and `common_setup.sh`, and AlwaysStrong has them only
+  because it absorbs PlayIntegrityFork into one module. Repeating them would fight the module
+  this engine drives. AlwaysStrong itself ships `prop_unify.sh` without running it, because a
+  global spoof leaks the Pixel identity to every process.
+- **DenyList entries, hiding recovery folders, log cleaning, the VBMeta digest.** These hide root
+  from applications, which is a separate concern from attestation, and their safe settings depend
+  on the hider in use (AlwaysStrong's own notes on Magisk's built-in Zygisk with enforcement on).
+  Doing them silently would surprise users.
+- **A watchdog for the keystore daemon.** TEESimulator-RS's `supervisor` already restarts its
+  daemon; a second supervisor would only race it.
+- **Its own TLS fetcher.** See *The engine performs no network access*.
+
+## The package watcher
+
+`replay watch --package <application>` is a process that runs while the system runs. It waits
+until `sys.boot_completed`, rebuilds `target.txt` with the settings saved by the last `apply`,
+then waits for `/data/system/packages.list` to change and rebuilds the list again, three seconds
+after a change, so that the several writes of one installation cause one rebuild. The package
+manager rewrites that file whenever a package is installed, updated or removed. It writes a
+temporary file and renames it over the list, so the watch is on the directory (`FileWatch`, an
+inotify watch on `/data/system` filtered by name): a watch on the file itself would follow the
+replaced inode and see nothing more. A blocking inotify read costs no CPU until the kernel reports
+an event. Events of other files in `/data/system` are read and dropped; files in its
+subdirectories cause none.
+
+It is started by a second boot script, in `service.d` (the `service` stage, which Magisk, KernelSU
+and APatch all run from that directory), in the background so that the root manager never waits
+for it. `hook install` starts it at once when it does not run, so that it works without a reboot.
+`--no-watch` (the setting **Add new apps at once**) removes the service script and ends the
+watcher. Watching needs the boot hook, because the watcher runs the hook's copy of the engine.
+
+One watcher runs at a time: it holds an exclusive `flock` on `watch.lock` in the store and writes
+its process ID there. The kernel releases the lock when the process ends, however it ends, so a
+crash leaves no stale lock. Whether a watcher runs is decided without touching the lock: the
+process ID in the file must name a process whose command line is the store's copy of the engine
+running `watch`. Reading `/proc/<pid>/cmdline` tells a reused process ID apart, and unlike
+`/proc/<pid>/exe` it still names the path after that file was replaced. Probing the lock instead
+was rejected, because a probe at the moment a watcher starts would make that watcher believe
+another one runs, and it would exit.
+
+The watcher ends when the application is uninstalled (it removes the boot hook, as `boot` does,
+from the same `packages.list` test) and when the boot hook is removed. `hook remove` ends it with
+a signal. When `hook install` replaces the engine copy (an update of the application), it ends the
+watcher that runs the old copy and starts the new one. A rebuild that fails is logged and the
+watcher goes on. It keeps no log lines in memory, and the log file is now rotated before every
+line rather than only when a command starts, so a long-running process cannot grow it without
+bound.
+
+Alternatives that were set aside: a manifest receiver for `ACTION_PACKAGE_ADDED` receives nothing
+since Android 8, because that broadcast is not exempt from the limits on implicit broadcasts. A
+receiver registered at run time works only while the app's process lives. A frequent periodic
+job (`PackageManager.getChangedPackages`) still leaves a delay of fifteen minutes or more, longer
+in Doze. A watcher inside the boot script itself (a shell loop like AlwaysStrong's) would poll or
+need tools the device may lack.
+
+### Two writers of one file
+
+The watcher and an `apply` of the app can write `target.txt` at the same moment. `write_atomic`
+used one temporary name per file, so one process could delete the other's temporary file and
+rename a partly written one into place. The temporary file is now named after the process ID, so
+each process renames only its own whole file and the last rename wins. Both build the same list
+from the same settings.

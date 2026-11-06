@@ -118,9 +118,16 @@ class Engine(val context: Context) {
     suspend fun installModule(privilege: Privilege, component: Component, zip: File): EngineResult<ModuleOutput> =
         run(privilege, listOf("install-module", component.argument, zip.absolutePath), ModuleOutput.serializer(), LONG_TIMEOUT_MILLIS)
 
-    /** Installs the boot scripts, with a copy of the engine that survives updates of the application. */
-    suspend fun installHook(privilege: Privilege): EngineResult<BootHook> =
-        run(privilege, listOf("hook", "install", "--package", context.packageName), BootHook.serializer())
+    /**
+     * Installs the boot scripts, with a copy of the engine that survives updates of the application.
+     * With `watch`, the package watcher is started at every boot, and now when it does not run.
+     */
+    suspend fun installHook(privilege: Privilege, watch: Boolean): EngineResult<BootHook> =
+        run(privilege, listOf("hook", "install", "--package", context.packageName) + (if (watch) emptyList() else listOf("--no-watch")), BootHook.serializer())
+
+    /** Disables the conflicting modules from the next boot; returns them as they are afterwards. */
+    suspend fun disableConflicts(privilege: Privilege): EngineResult<List<Module>> =
+        run(privilege, listOf("disable-conflicts"), ListSerializer(Module.serializer()))
 
     suspend fun removeHook(privilege: Privilege): EngineResult<BootHook> = run(privilege, listOf("hook", "remove"), BootHook.serializer())
 

@@ -131,4 +131,29 @@ class EngineModelsTest {
         val report = FingerprintReport(spoof = listOf(listOf("spoofBuild", "1"), listOf("spoofProps", "true"), listOf("spoofProvider", "0"), listOf("broken")))
         assertEquals(mapOf("spoofBuild" to true, "spoofProps" to true, "spoofProvider" to false), report.spoofFlags())
     }
+
+    @Test
+    fun bootHookReportsTheWatcher() {
+        // `watcher` is an `Option<u32>`: a process ID, or null when no watcher runs.
+        val running = json.decodeFromString(BootHook.serializer(), """{"managers":["kernelSU"],"scripts":["/data/adb/post-mount.d/replay-integrity.sh","/data/adb/service.d/replay-integrity.sh"],"watches":true,"watcher":4321}""")
+        assertTrue(running.installed)
+        assertTrue(running.watches)
+        assertEquals(4321L, running.watcher)
+        val stopped = json.decodeFromString(BootHook.serializer(), """{"managers":["magisk"],"scripts":[],"watches":false,"watcher":null}""")
+        assertFalse(stopped.installed)
+        assertNull(stopped.watcher)
+        // An engine of an earlier version prints neither field.
+        assertNull(json.decodeFromString(BootHook.serializer(), """{"managers":[],"scripts":[]}""").watcher)
+    }
+
+    @Test
+    fun disabledConflictsAreModules() {
+        val response = json.decodeFromString(
+            EngineResponse.serializer(),
+            """{"ok":true,"result":[{"id":"TrickyStore","name":"Tricky Store","version":"v1","versionCode":1,"author":null,"installed":true,"disabled":true,"removing":false,"updatePending":false}],"log":[{"time":1,"level":"info","message":"disabled"}]}""",
+        )
+        val modules = json.decodeFromJsonElement(kotlinx.serialization.builtins.ListSerializer(Module.serializer()), response.result!!)
+        assertEquals("TrickyStore", modules.single().id)
+        assertFalse(modules.single().active)
+    }
 }

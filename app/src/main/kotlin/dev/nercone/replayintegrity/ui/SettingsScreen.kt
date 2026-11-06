@@ -120,7 +120,7 @@ object SettingsScreen {
             val hook = state.status?.bootHook
             Widgets.Group {
                 Widgets.SwitchItem(
-                    0, 2,
+                    0, 3,
                     headline = stringResource(R.string.settings_boot_hook),
                     supporting = when {
                         hook == null -> stringResource(R.string.settings_boot_hook_help)
@@ -132,7 +132,18 @@ object SettingsScreen {
                     enabled = privileged,
                     onChange = model::setBootHook,
                 )
-                Widgets.SwitchItem(1, 2, stringResource(R.string.settings_repair_after_boot), stringResource(R.string.settings_repair_after_boot_help), settings.repairAfterBoot) { enabled ->
+                Widgets.SwitchItem(
+                    1, 3,
+                    headline = stringResource(R.string.settings_watch_packages),
+                    supporting = when {
+                        hook?.watcher != null -> stringResource(R.string.settings_watch_packages_running)
+                        else -> stringResource(R.string.settings_watch_packages_help)
+                    },
+                    checked = settings.watchPackages,
+                    enabled = privileged && settings.bootHook,
+                    onChange = model::setWatchPackages,
+                )
+                Widgets.SwitchItem(2, 3, stringResource(R.string.settings_repair_after_boot), stringResource(R.string.settings_repair_after_boot_help), settings.repairAfterBoot) { enabled ->
                     model.configure { it.copy(repairAfterBoot = enabled) }
                 }
             }

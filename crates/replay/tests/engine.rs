@@ -5,8 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use replay::{
-    ApplyMode, BootHook, BootReport, Engine, Fingerprint, FingerprintProblem, Layout, PatchDate, Settings, SpoofFlag, SpoofFlags, Target, TargetList,
-    TargetMode,
+    ApplyMode, BootHook, BootReport, Conflicts, Engine, Files, Fingerprint, FingerprintProblem, Layout, Log, Module, PackageWatcher, PatchDate, Settings,
+    SpoofFlag, SpoofFlags, Target, TargetList, TargetMode, WatchReport,
 };
 
 const TEST_KEYBOX: &str = include_str!("../../keybox/tests/fixtures/test-keybox.xml");
@@ -213,11 +213,14 @@ fn the_boot_hook_runs_a_copy_of_the_engine_at_a_fixed_path() {
     fs::create_dir_all(root.join("data/adb/magisk")).unwrap();
     let executable = root.join("engine-binary");
     fs::write(&executable, b"#!/system/bin/sh\n").unwrap();
-    let hook = BootHook::install(&layout, &executable, "dev.nercone.replayintegrity").unwrap();
+    let hook = BootHook::install(&layout, &executable, "dev.nercone.replayintegrity", false).unwrap();
     assert!(hook.is_installed());
     let script = fs::read_to_string(&hook.scripts[0]).unwrap();
     let copy = layout.store().join("replay");
-    assert!(script.contains(&format!("'{}' boot --package 'dev.nercone.replayintegrity'", copy.display())), "{script}");
+    assert!(script.contains(&format!("'{}' 'boot' '--package' 'dev.nercone.replayintegrity'", copy.display())), "{script}");
+    // Without the package watcher, no service script is installed.
+    assert!(!hook.watches);
+    assert!(!root.join("data/adb/service.d").join(BootHook::FILE_NAME).exists());
     assert_eq!(fs::read(&copy).unwrap(), b"#!/system/bin/sh\n");
     // A package name that is not one is refused, so the script cannot carry anything else.
     assert!(BootHook::script(&layout, "x'; rm -rf /; '").is_err());
@@ -266,4 +269,213 @@ fn settings_as_the_application_writes_them_are_read() {
     assert_eq!(settings.target_mode, TargetMode::Patch);
     assert_eq!(settings.spoof_flags(Some(34)).get(SpoofFlag::Provider), Some(true));
     assert_eq!(settings.extra_packages, vec!["com.extra".to_string()]);
+}
+
+fn write_module(directory: &std::path::Path, name: &str) {
+    fs::create_dir_all(directory).unwrap();
+    fs::write(directory.join("module.prop"), format!("id={}\nname={name}\nversion=v1\nversionCode=1\n", directory.file_name().unwrap().to_string_lossy()))
+        .unwrap();
+}
+
+#[test]
+fn conflicting_modules_are_disabled_with_the_marker_of_the_root_managers() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    // An installed conflict with a pending update, a conflict waiting only in modules_update, a
+    // conflict the user already disabled, and a module that does not conflict.
+    write_module(&layout.modules().join("TrickyStore"), "Tricky Store");
+    write_module(&layout.modules_update().join("TrickyStore"), "Tricky Store");
+    write_module(&layout.modules_update().join("playcurl"), "playcurl");
+    write_module(&layout.modules().join("safetynet-fix"), "Universal SafetyNet Fix");
+    fs::write(layout.modules().join("safetynet-fix/disable"), "").unwrap();
+    write_module(&layout.modules().join("zygisksu"), "Zygisk Next");
+    let mut engine = Engine::new(layout.clone());
+    let disabled = engine.disable_conflicts().unwrap();
+    let ids: Vec<&str> = disabled.iter().map(|module| module.id.as_str()).collect();
+    assert_eq!(ids, ["TrickyStore", "playcurl"]);
+    assert!(disabled.iter().all(|module| module.disabled && !module.is_active()));
+    // The marker is in the installed directory and in the pending update, which replaces it at
+    // the next boot; nothing is removed, so the user can enable the module again.
+    assert!(layout.modules().join("TrickyStore").join(Module::DISABLE).is_file());
+    assert!(layout.modules_update().join("TrickyStore").join(Module::DISABLE).is_file());
+    assert!(layout.modules_update().join("playcurl").join(Module::DISABLE).is_file());
+    assert!(layout.modules().join("TrickyStore/module.prop").is_file());
+    assert!(!layout.modules().join("TrickyStore").join(Module::REMOVE).exists());
+    // A module that does not conflict is left alone.
+    assert!(!layout.modules().join("zygisksu").join(Module::DISABLE).exists());
+    assert!(Conflicts::active(&layout).is_empty());
+    // Doing it again changes nothing.
+    assert!(engine.disable_conflicts().unwrap().is_empty());
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A `custom.pif.json` as PlayIntegrityFork documents it: a flat object of strings, with
+/// entries commented out by a `//` prefix, and numbers where other tools write them.
+const PIF_JSON: &str = r#"{
+  "MANUFACTURER": "Google",
+  "MODEL": "Pixel 6a",
+  "FINGERPRINT": "google/bluejay_beta/bluejay:CANARY/ZP11.000000.000/12345678:user/release-keys",
+  "BRAND": "google",
+  "PRODUCT": "bluejay_beta",
+  "DEVICE": "bluejay",
+  "SECURITY_PATCH": "2026-11-05",
+  "DEVICE_INITIAL_SDK_INT": 32,
+  "*.build.id": "ZP11.000000.000",
+  "//*.security_patch": "2026-11-05",
+  "spoofProvider": "0",
+  "verboseLogs": false
+}"#;
+
+#[test]
+fn a_json_fingerprint_reads_as_its_prop_form() {
+    let fingerprint = Fingerprint::read(PIF_JSON).unwrap();
+    assert!(fingerprint.problems(0).is_empty(), "{:?}", fingerprint.problems(0));
+    assert_eq!(fingerprint.file.get("MODEL"), Some("Pixel 6a"));
+    assert_eq!(fingerprint.file.get("DEVICE_INITIAL_SDK_INT"), Some("32"));
+    assert_eq!(fingerprint.file.get("*.build.id"), Some("ZP11.000000.000"));
+    assert_eq!(fingerprint.file.get("spoofProvider"), Some("0"));
+    assert_eq!(fingerprint.file.get("verboseLogs"), Some("0"));
+    // A commented-out entry stays commented out, and is not an entry.
+    assert_eq!(fingerprint.file.get("*.security_patch"), None);
+    let rendered = fingerprint.file.render();
+    assert!(rendered.lines().any(|line| line == "#*.security_patch=2026-11-05"), "{rendered}");
+    // The entries keep the order of the file.
+    let keys: Vec<&str> = fingerprint.file.entries().map(|(key, _)| key).collect();
+    assert_eq!(&keys[..3], ["MANUFACTURER", "MODEL", "FINGERPRINT"]);
+    // A prop file is read as one; a byte order mark before a JSON object is allowed.
+    assert_eq!(Fingerprint::read("MODEL=Pixel\n").unwrap().file.get("MODEL"), Some("Pixel"));
+    assert_eq!(Fingerprint::read("\u{feff}{\"MODEL\":\"Pixel\"}").unwrap().file.get("MODEL"), Some("Pixel"));
+}
+
+#[test]
+fn a_json_fingerprint_that_cannot_be_one_prop_file_is_rejected() {
+    // A value or key that would become more than one line, or a key that would read back as
+    // another key, could add entries that were not in the file.
+    for json in [
+        r#"{"MODEL": "Pixel\nspoofProvider=1"}"#,
+        r#"{"MODEL\nspoofProvider": "1"}"#,
+        r#"{"MODEL=x": "1"}"#,
+        r#"{"": "1"}"#,
+        r#"{"MODEL": ["Pixel"]}"#,
+        r#"{"MODEL": {"name": "Pixel"}}"#,
+        r#"{"MODEL": "Pixel""#,
+    ] {
+        assert!(Fingerprint::read(json).is_err(), "{json}");
+    }
+    // Only an object is a `custom.pif.json`.
+    assert!(Fingerprint::from_json(r#"["MODEL"]"#).is_err());
+}
+
+#[test]
+fn a_json_fingerprint_is_installed_in_the_prop_format() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    fs::create_dir_all(layout.modules().join("playintegrityfix")).unwrap();
+    let mut engine = Engine::new(layout.clone());
+    let report = engine.install_fingerprint(PIF_JSON.as_bytes(), None, &Settings::default()).unwrap();
+    assert!(report.changed);
+    let stored = fs::read_to_string(layout.store().join("fingerprint.prop")).unwrap();
+    assert!(stored.contains("MODEL=Pixel 6a\n") && !stored.contains('{'), "{stored}");
+    let pif = fs::read_to_string(layout.modules().join("playintegrityfix/custom.pif.prop")).unwrap();
+    assert!(pif.contains("FINGERPRINT=google/bluejay_beta/bluejay:") && pif.contains("spoofBuild=1"), "{pif}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn unchanged_files_are_not_written_again() {
+    let root = temporary_root();
+    let path = root.join("data/adb/tricky_store/target.txt");
+    assert!(Files::write_if_changed(&path, b"com.example\n", 0o644).unwrap());
+    let before = fs::metadata(&path).unwrap();
+    // The same contents leave the file alone, so programs that watch it see no write.
+    assert!(!Files::write_if_changed(&path, b"com.example\n", 0o644).unwrap());
+    let after = fs::metadata(&path).unwrap();
+    assert_eq!(std::os::unix::fs::MetadataExt::ino(&before), std::os::unix::fs::MetadataExt::ino(&after));
+    assert!(Files::write_if_changed(&path, b"com.other\n", 0o644).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), b"com.other\n");
+    // No temporary file is left behind.
+    let names: Vec<String> = fs::read_dir(path.parent().unwrap()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["target.txt"]);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_service_script_starts_the_package_watcher() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    fs::create_dir_all(root.join("data/adb/ksud")).unwrap();
+    let executable = root.join("engine-binary");
+    fs::write(&executable, b"#!/system/bin/sh\n").unwrap();
+    let package = "dev.nercone.replayintegrity";
+    let hook = BootHook::install(&layout, &executable, package, true).unwrap();
+    assert!(hook.watches);
+    let service = root.join("data/adb/service.d").join(BootHook::FILE_NAME);
+    let script = fs::read_to_string(&service).unwrap();
+    let copy = layout.store().join("replay");
+    // It runs the store's copy with `watch`, in the background, so the root manager does not wait.
+    assert!(script.contains(&format!("'{}' 'watch' '--package' '{package}'", copy.display())), "{script}");
+    assert!(script.trim_end().ends_with('&'), "{script}");
+    // The early script is installed too, in the directory of KernelSU.
+    assert!(root.join("data/adb/post-mount.d").join(BootHook::FILE_NAME).is_file());
+    // Turning the watcher off removes the service script and keeps the early one.
+    let hook = BootHook::install(&layout, &executable, package, false).unwrap();
+    assert!(!hook.watches && hook.is_installed());
+    assert!(!service.exists());
+    BootHook::remove(&layout).unwrap();
+    assert!(!BootHook::current(&layout).is_installed());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn one_package_watcher_holds_the_lock_at_a_time() {
+    let root = temporary_root();
+    let watcher = PackageWatcher::new(&Layout::new(&root));
+    let first = watcher.lock().unwrap();
+    assert!(first.is_some());
+    // A second holder is refused while the first holds the lock.
+    assert!(watcher.lock().unwrap().is_none());
+    // The lock names this process, but this process is not a watcher, so none is running: a
+    // process ID that was reused by another program is not taken for a watcher.
+    assert_eq!(fs::read_to_string(watcher.lock_path()).unwrap(), std::process::id().to_string());
+    assert_eq!(watcher.running(), None);
+    drop(first);
+    assert!(watcher.lock().unwrap().is_some());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_watcher_is_told_by_the_engine_copy_and_the_command() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let watcher = PackageWatcher::new(&layout);
+    let copy = layout.store().join("replay").to_string_lossy().into_owned();
+    let mut arguments = vec![copy.clone()];
+    arguments.extend(watcher.arguments("dev.nercone.replayintegrity"));
+    assert!(watcher.is_watcher(&arguments));
+    assert!(!watcher.is_watcher(&[copy.clone(), "boot".to_string()]));
+    assert!(!watcher.is_watcher(&["/system/bin/sh".to_string(), "watch".to_string()]));
+    assert!(!watcher.is_watcher(&[copy]));
+    assert!(!watcher.is_watcher(&[]));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_watcher_reports_its_outcome_by_name() {
+    assert_eq!(serde_json::to_value(WatchReport::Stopped).unwrap()["outcome"], "stopped");
+    assert_eq!(serde_json::to_value(WatchReport::AlreadyRunning { pid: Some(7) }).unwrap()["pid"], 7);
+}
+
+#[test]
+fn the_log_file_is_rotated_while_it_is_written() {
+    let root = temporary_root();
+    let path = root.join("replay.log");
+    let mut log = Log::new(Some(path.clone()));
+    let line = "x".repeat(1024);
+    for _ in 0..(Log::MAX_FILE_SIZE / 1024 + 8) {
+        log.info(line.clone());
+    }
+    // The file never grows much past the limit; the older lines are in `.old`.
+    assert!(fs::metadata(&path).unwrap().len() <= Log::MAX_FILE_SIZE + 2048);
+    assert!(root.join("replay.log.old").is_file());
+    let _ = fs::remove_dir_all(&root);
 }

@@ -1,6 +1,6 @@
 [package]
 name = "android"
-description = "Android system interfaces: system properties, the package manager and the package list, processes and their capabilities"
+description = "Android system interfaces: system properties, the package manager and the package list, processes and their capabilities, and watches of files"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

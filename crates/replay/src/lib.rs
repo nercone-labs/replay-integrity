@@ -16,7 +16,9 @@
 //! keeps per-application keys it generated with an older keybox, so those applications keep
 //! receiving a chain built from a keybox that is no longer valid. `Engine::apply` re-applies the
 //! configuration and removes those stale keys; run at boot (through the boot hook, `Engine::boot`) and
-//! periodically (by the application), it is what keeps the verdict from decaying.
+//! periodically (by the application), it is what keeps the verdict from decaying. The package
+//! watcher (`Engine::watch`) keeps the target list current between those runs, so that an
+//! application installed in the meantime is attested at once.
 //!
 //! The network is left to the application, which has ordinary TLS: it downloads the keybox, the
 //! fingerprint and the certificate status list and hands the bytes to the engine, which parses,
@@ -39,6 +41,7 @@ mod root_manager;
 mod store;
 mod targets;
 mod verify;
+mod watcher;
 
 pub use components::{Component, ComponentState, Conflicts, Flavor};
 pub use config::{KeystoreConfig, Settings};
@@ -57,3 +60,4 @@ pub use root_manager::{RootManager, Zygisk};
 pub use store::{InstalledFile, State, Store};
 pub use targets::{Target, TargetList, TargetMode};
 pub use verify::{KeyProblem, KeyVerdict, KeyboxVerdict, Verifier};
+pub use watcher::{PackageWatcher, WatchReport};

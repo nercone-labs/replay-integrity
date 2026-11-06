@@ -29,8 +29,9 @@ pub struct State {
 
 /// The directory of the engine, `/data/adb/replay-integrity`, readable by root only:
 /// `state.json`, the settings applied last (`settings.json`), the installed fingerprint
-/// (`fingerprint.prop`), the keybox replaced last (`previous-keybox.xml`), the log, and the copy
-/// of the engine that the boot hook runs (`replay`).
+/// (`fingerprint.prop`), the keybox replaced last (`previous-keybox.xml`), the log, the copy
+/// of the engine that the boot hook runs (`replay`), and the lock of the package watcher
+/// (`watch.lock`).
 pub struct Store {
     pub directory: PathBuf,
 }
@@ -103,16 +104,17 @@ impl Store {
         self.directory.join(Store::EXECUTABLE)
     }
 
-    /// Copies `source` (the running engine) to `executable`, replacing an earlier copy atomically.
-    pub fn install_executable(&self, source: &std::path::Path) -> Result<PathBuf, ReplayError> {
+    /// Copies `source` (the running engine) to `executable`, replacing an earlier copy
+    /// atomically when it differs. Returns whether the copy changed: processes that run the
+    /// earlier copy (the package watcher) still run the old engine.
+    pub fn install_executable(&self, source: &std::path::Path) -> Result<bool, ReplayError> {
         let target = self.executable();
         if source == target {
-            return Ok(target);
+            return Ok(false);
         }
         self.create()?;
         let bytes = Files::read(source)?;
-        Files::write_atomic(&target, &bytes, Store::EXECUTABLE_MODE)?;
-        Ok(target)
+        Files::write_if_changed(&target, &bytes, Store::EXECUTABLE_MODE)
     }
 
     pub fn previous_keybox(&self) -> PathBuf {
