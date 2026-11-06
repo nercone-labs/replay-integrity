@@ -66,16 +66,17 @@ impl KeyboxVerdict {
         self.keys.iter().any(|key| key.algorithm == algorithm.name() && key.is_usable())
     }
 
-    /// Whether the keybox is worth installing: it has at least one key and no key whose private
-    /// key disagrees with its certificate. Trust, validity and revocation are reported but do
-    /// not block installation, so a user may install a keybox the verdict flags as weak.
+    /// Whether the keybox is worth installing: at least one key whose private key does not
+    /// disagree with its certificate. Trust, validity and revocation are reported but do not
+    /// block installation, so a user may install a keybox the verdict flags as weak.
     pub fn is_installable(&self) -> bool {
-        !self.keys.is_empty() && !self.keys.iter().any(|key| key.problems.contains(&KeyProblem::KeyMismatch))
+        self.keys.iter().any(|key| !key.problems.contains(&KeyProblem::KeyMismatch))
     }
 
     /// How good the keys of the keybox are, for comparing two: whether one is a usable EC key,
-    /// then how many are usable. `defect` is left out, because a keybox is written again as a
-    /// well-formed one before it is installed. Expiry is left out on purpose: a mirror replaces
+    /// then how many are usable. `defect` is left out: an offered keybox is written again as a
+    /// well-formed one before it is installed, and an installed one is written again by the
+    /// next `apply` (`Engine::repair_keybox`), so in both the recovered keys are what counts. Expiry is left out on purpose: a mirror replaces
     /// a keybox before it leaks, not when it expires, so a newer keybox that expires sooner is
     /// not worse.
     pub fn rank(&self) -> (bool, usize) {
@@ -83,18 +84,22 @@ impl KeyboxVerdict {
     }
 
     /// Whether this keybox may replace `installed` without making the device worse off: none
-    /// is installed, the installed file is not well-formed (the daemon reads no key from it),
-    /// or this one ranks at least as high.
+    /// is installed, or this one ranks at least as high.
     pub fn may_replace(&self, installed: Option<&KeyboxVerdict>) -> bool {
-        installed.is_none_or(|installed| installed.defect.is_some() || self.rank() >= installed.rank())
+        installed.is_none_or(|installed| self.rank() >= installed.rank())
     }
 
     /// The indices of the keys worth writing: the usable ones when there are any, so that the
-    /// daemon never picks a revoked or untrusted key over a usable one; otherwise every key,
-    /// because a weak keybox the user chose is still theirs to install.
+    /// daemon never picks a revoked or untrusted key over a usable one; otherwise every key
+    /// whose private key matches its certificate, because a weak keybox the user chose is still
+    /// theirs to install. A key whose private key does not match is never written: it cannot
+    /// sign anything its chain vouches for.
     pub fn keys_to_write(&self) -> Vec<usize> {
         let usable: Vec<usize> = self.keys.iter().enumerate().filter(|(_, key)| key.is_usable()).map(|(index, _)| index).collect();
-        if usable.is_empty() { (0..self.keys.len()).collect() } else { usable }
+        if !usable.is_empty() {
+            return usable;
+        }
+        self.keys.iter().enumerate().filter(|(_, key)| !key.problems.contains(&KeyProblem::KeyMismatch)).map(|(index, _)| index).collect()
     }
 
     /// The soonest a usable key stops being valid: when the keybox needs replacing.

@@ -154,26 +154,9 @@ fn recovery_takes_the_algorithm_from_the_key_itself() {
 }
 
 #[test]
-fn recovery_skips_regions_that_are_not_one_key() {
-    // A watermark element without PEM, and a region with two private keys, are not keys.
-    let ec_key = TEST_KEYBOX.split("<Key algorithm=\"ecdsa\">").nth(1).unwrap().split("</Key>").next().unwrap();
-    let doubled = format!("<Key algorithm=\"ecdsa\">{ec_key}{ec_key}</Key>");
-    let text = unclosed_attribute().replacen("<Key algorithm=\"rsa\">", &format!("<Key algorithm=\"@evokerr\"></Key>\n{doubled}\n<Key algorithm=\"rsa\">"), 1);
-    let document = KeyboxDocument::read(&text).unwrap();
-    let algorithms: Vec<_> = document.keys().map(|key| key.algorithm).collect();
-    assert_eq!(algorithms, [KeyAlgorithm::ECDSA, KeyAlgorithm::RSA]);
-}
-
-#[test]
 fn recovery_tolerates_missing_end_tags() {
     let truncated = unclosed_attribute().replace("</Keybox>", "").replace("</AndroidAttestation>", "");
     assert_eq!(KeyboxDocument::read(&truncated).unwrap().keys().count(), 2);
-}
-
-#[test]
-fn a_keybox_element_does_not_start_a_key_region() {
-    let regions: Vec<_> = KeyboxDocument::key_regions("<Keybox><Key algorithm=\"a\"/><KeyX><Key>").collect();
-    assert_eq!(regions, ["<Key algorithm=\"a\"/><KeyX>", "<Key>"]);
 }
 
 #[test]
@@ -200,4 +183,47 @@ fn the_debug_form_of_a_key_holds_no_secret() {
         assert!(!format!("{key:?}").contains(secret_line));
         assert!(!format!("{document:?}").contains(secret_line));
     }
+}
+
+#[test]
+fn recovery_keeps_keys_around_watermarks_and_comments() {
+    // A watermark element inside a key, and a comment with a `<Key` tag, are only markup.
+    let text = unclosed_attribute().replacen("<CertificateChain>", "<Key algorithm=\"@evokerr\"/>\n<CertificateChain>", 1).replacen(
+        "</Certificate>",
+        "</Certificate>\n<!-- <Key > -->",
+        1,
+    );
+    let document = KeyboxDocument::read(&text).unwrap();
+    assert_eq!(key_material(&document), key_material(&KeyboxDocument::parse(TEST_KEYBOX).unwrap()));
+}
+
+#[test]
+fn recovery_ignores_commented_out_keys_and_invalid_pem() {
+    let ec_key = TEST_KEYBOX.split("<Key algorithm=\"ecdsa\">").nth(1).unwrap().split("</Key>").next().unwrap();
+    let text = unclosed_attribute().replacen(
+        "<Key algorithm=\"rsa\">",
+        &format!("<!-- {ec_key} -->\n-----BEGIN CERTIFICATE-----\nnot base64!\n-----END CERTIFICATE-----\n<Key algorithm=\"rsa\">"),
+        1,
+    );
+    let document = KeyboxDocument::read(&text).unwrap();
+    assert_eq!(key_material(&document), key_material(&KeyboxDocument::parse(TEST_KEYBOX).unwrap()));
+}
+
+#[test]
+fn a_well_formed_document_that_breaks_a_rule_of_the_format_has_no_defect() {
+    // A daemon does not read the declared counts, so a wrong count does not hide the keys.
+    let wrong = TEST_KEYBOX.replace("<NumberOfCertificates>2</NumberOfCertificates>", "<NumberOfCertificates>3</NumberOfCertificates>");
+    let document = KeyboxDocument::read(&wrong).unwrap();
+    assert_eq!(document.defect, None);
+    assert_eq!(key_material(&document), key_material(&KeyboxDocument::parse(TEST_KEYBOX).unwrap()));
+}
+
+#[test]
+fn characters_xml_does_not_allow_are_not_rendered() {
+    let mut document = KeyboxDocument::parse(TEST_KEYBOX).unwrap();
+    document.keyboxes[0].device_id = Some("a\u{1}b\u{fffe}c\td\ne".to_string());
+    let rendered = document.render();
+    assert!(!rendered.contains('\u{1}') && !rendered.contains('\u{fffe}'));
+    let reparsed = KeyboxDocument::parse(&rendered).unwrap();
+    assert_eq!(reparsed.keyboxes[0].device_id.as_deref(), Some("a\u{fffd}b\u{fffd}c\td\ne"));
 }

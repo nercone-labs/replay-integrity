@@ -163,7 +163,7 @@ fn a_malformed_keybox_is_installed_as_a_well_formed_one() {
 }
 
 #[test]
-fn a_keybox_that_no_daemon_can_read_is_replaced_without_downgrade_checks() {
+fn a_malformed_installed_keybox_is_replaced_by_one_of_equal_rank() {
     let root = temporary_root();
     let layout = Layout::new(&root);
     let keybox_path = layout.tricky_store().join("keybox.xml");
@@ -272,6 +272,9 @@ fn the_mode_of_the_play_stack_is_a_setting_of_its_own() {
 fn settings_saved_before_the_play_mode_existed_generate_for_the_play_stack() {
     let settings = Settings::parse(br#"{"extraPackages":[],"excludedPackages":[],"targetMode":"auto","spoofOverrides":[]}"#).unwrap();
     assert_eq!(settings.play_target_mode, TargetMode::Generate);
+    // A mode the user chose for every target before keeps applying to the Play stack.
+    let settings = Settings::parse(br#"{"targetMode":"patch"}"#).unwrap();
+    assert_eq!(settings.play_target_mode, TargetMode::Patch);
     let settings = Settings::parse(br#"{"targetMode":"auto","playTargetMode":"patch"}"#).unwrap();
     assert_eq!(settings.play_target_mode, TargetMode::Patch);
 }

@@ -111,6 +111,7 @@
     <string name="keybox_revoked">Revoked by Google: refresh to replace it</string>
     <string name="keybox_weak">%1$d of %2$d keys usable: a usable EC key is needed</string>
     <string name="keybox_malformed">The file is not a well-formed keybox, so the keystore reads no key from it. Repair writes it again with its keys.</string>
+    <string name="candidate_malformed">Not well-formed: its keys are written as a well-formed keybox when it is installed</string>
     <string name="keybox_partly_revoked">An EC key is usable, but another key is revoked. Refresh to install a keybox without it.</string>
     <string name="keybox_unchecked">Usable, but revocation could not be checked</string>
     <string name="keybox_valid">Valid</string>

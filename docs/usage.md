@@ -73,6 +73,8 @@ applications are added automatically; Xposed managers are always left out.
 - **Key handling of Google Play**: the same choice for Play services, its framework and the Play
   Store. Generate is the default and is recommended (TEESimulator-RS documents
   `com.google.android.gms!`): Play Integrity then always gets a key attested with the keybox.
+  If you had chosen Generate or Patch for every target before this setting existed, Google Play
+  keeps that choice.
 - **Added packages**: system applications (or any package) to attest too.
 - **Excluded packages**: applications that keep the device's own attestation. A target can also
   be excluded from the list with its button.
@@ -105,15 +107,19 @@ Without it, the list follows the installed applications at the next refresh or r
 A refresh installs a downloaded keybox only when it is at least as good as the installed one:
 it must have a usable EC key if the installed one has one, and, when both or neither have one,
 at least as many usable keys. A keybox
-that a mirror serves revoked, expired or broken is therefore kept out, and the next source is
-tried; the installed keybox stays. A keybox you import is installed whatever it is.
+that a mirror serves revoked, expired or untrusted is therefore kept out, and the next source is
+tried; the installed keybox stays, and this is not reported as a failure. Broken XML alone does
+not keep a keybox out, because its keys are written again (below). A keybox you import is
+installed even when it is weak, as long as one of its keys matches its certificate.
 
 What is written to `keybox.xml` is not the downloaded file itself but its keys, checked and
 written again as a well-formed keybox: mirrors often serve files with broken XML (a missing
 quote, a watermark element), from which the keystore would read no key at all. When a keybox
 has usable keys, the others (revoked, untrusted, expired) are left out, so that the keystore
 never uses them. A `keybox.xml` that another tool put there with broken XML is written again,
-with its keys, at the next repair or boot.
+with the keys that can be recovered from it, at the next repair or boot; the original is kept in
+`/data/adb/replay-integrity/` as the previous keybox. Recovering keys keeps one keybox without its
+device ID, which the keystore does not read.
 
 An RSA key is not needed for STRONG: Play Integrity attests with EC, and TEESimulator-RS signs
 RSA requests with the EC key when there is no RSA key.

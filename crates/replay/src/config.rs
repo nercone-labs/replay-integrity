@@ -96,8 +96,18 @@ impl Default for Settings {
 impl Settings {
     /// Parses settings and checks them: every package must be a package name, so that nothing
     /// else can reach `target.txt`, and every override must name a known spoof flag.
+    ///
+    /// Settings written before `play_target_mode` existed gave the Play stack `target_mode`. When
+    /// the field is missing and that mode was not `Auto`, the user chose it on purpose, so the
+    /// Play stack keeps it; otherwise it gets the default, `Generate`.
     pub fn parse(bytes: &[u8]) -> Result<Settings, ReplayError> {
-        let settings: Settings = serde_json::from_slice(bytes).map_err(|error| ReplayError::Rejected(vec![format!("invalid settings: {error}")]))?;
+        let invalid = |error: serde_json::Error| ReplayError::Rejected(vec![format!("invalid settings: {error}")]);
+        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(invalid)?;
+        let has_play_mode = value.get("playTargetMode").is_some();
+        let mut settings: Settings = serde_json::from_value(value).map_err(invalid)?;
+        if !has_play_mode && settings.target_mode != TargetMode::Auto {
+            settings.play_target_mode = settings.target_mode;
+        }
         let problems = settings.problems();
         if problems.is_empty() { Ok(settings) } else { Err(ReplayError::Rejected(problems)) }
     }

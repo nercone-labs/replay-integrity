@@ -298,7 +298,8 @@ object AttestationScreen {
                         is Replay.Candidate.Keybox -> {
                             val verdict = candidate.verdict
                             Widgets.Field(stringResource(R.string.keybox_summary), stringResource(R.string.keybox_usable, verdict.usableKeys, verdict.keys.size))
-                            Widgets.Field(stringResource(R.string.keybox_strong), stringResource(if (verdict.strongCapable) R.string.yes else R.string.keybox_strong_needs))
+                            Widgets.Field(stringResource(R.string.keybox_strong), stringResource(if (verdict.strongCapableOnceInstalled) R.string.yes else R.string.keybox_strong_needs))
+                            if (verdict.defect != null) Widgets.Field(stringResource(R.string.candidate_malformed), verdict.defect)
                             verdict.keys.filter { !it.usable }.forEach { key ->
                                 Widgets.Field(key.algorithm.uppercase(), key.problems.map { Labels.problem(it) }.joinToString("\n"))
                             }

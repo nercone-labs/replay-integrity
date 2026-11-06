@@ -41,12 +41,17 @@ class SettingsTest {
 
     @Test
     fun aDocumentWithOneKeyboxSourceKeepsIt() {
-        // A document written before more keybox sources existed keeps its source, and the Play
-        // stack generates its keys, as the engine does for settings without the field.
-        val values = json.decodeFromString(Settings.Values.serializer(), """{"keyboxUrl":"https://mirror.example/key","targetMode":"patch"}""")
+        // A document written before more keybox sources existed keeps its source.
+        val values = Settings.decode("""{"keyboxUrl":"https://mirror.example/key"}""")
         assertEquals(listOf("https://mirror.example/key"), values.keyboxSources())
-        assertEquals(TargetMode.PATCH, values.targetMode)
-        assertEquals(TargetMode.GENERATE, values.playTargetMode)
+        assertEquals("the Play stack generates its keys by default", TargetMode.GENERATE, values.playTargetMode)
+    }
+
+    @Test
+    fun aModeChosenForEveryTargetBeforeKeepsApplyingToThePlayStack() {
+        assertEquals(TargetMode.PATCH, Settings.decode("""{"targetMode":"patch"}""").playTargetMode)
+        assertEquals(TargetMode.GENERATE, Settings.decode("""{"targetMode":"auto"}""").playTargetMode)
+        assertEquals("a stored Play mode wins", TargetMode.AUTO, Settings.decode("""{"targetMode":"patch","playTargetMode":"auto"}""").playTargetMode)
     }
 
     @Test

@@ -156,6 +156,13 @@ data class KeyboxVerdict(val keys: List<KeyVerdict> = emptyList(), val revocatio
      */
     val strongCapable: Boolean get() = defect == null && hasUsable(ECDSA)
 
+    /**
+     * Whether the keybox reaches STRONG once installed: a usable EC key. An offered keybox with
+     * a `defect` is written again as a well-formed one when it is installed, so its markup does
+     * not count, as in the engine's `KeyboxVerdict::rank`.
+     */
+    val strongCapableOnceInstalled: Boolean get() = hasUsable(ECDSA)
+
     /** Whether any key is revoked: the keybox leaked and Google listed it. */
     val revoked: Boolean get() = keys.any { key -> key.problems.any { it.detail == Problem.DETAIL_REVOKED } }
 

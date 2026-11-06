@@ -9,6 +9,7 @@ import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 /**
  * The preferences of the application, kept as one immutable value and stored as one JSON
@@ -95,7 +96,7 @@ class Settings(context: Context) {
 
     fun read(): Values {
         val text = preferences.getString(VALUES, null) ?: return Values()
-        return runCatching { JSON.decodeFromString(Values.serializer(), text) }.getOrDefault(Values())
+        return runCatching { decode(text) }.getOrDefault(Values())
     }
 
     /** Replaces the settings with `transform` of the current ones, and stores them. */
@@ -112,5 +113,16 @@ class Settings(context: Context) {
         const val DEFAULT_REFRESH_HOURS = 6
         val REFRESH_CHOICES = listOf(0, 3, 6, 12, 24)
         val JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true; coerceInputValues = true }
+
+        /**
+         * Decodes a stored document. A document written before `playTargetMode` existed gave the
+         * Play stack `targetMode`; a mode other than automatic was the user's choice, so the Play
+         * stack keeps it, as the engine's `Settings::parse` does.
+         */
+        fun decode(text: String): Values {
+            val values = JSON.decodeFromString(Values.serializer(), text)
+            val stored = JSON.parseToJsonElement(text).jsonObject
+            return if ("playTargetMode" !in stored && values.targetMode != TargetMode.AUTO) values.copy(playTargetMode = values.targetMode) else values
+        }
     }
 }

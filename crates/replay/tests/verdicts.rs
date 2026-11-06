@@ -52,9 +52,12 @@ fn a_better_or_equal_keybox_may_replace_the_installed_one() {
 }
 
 #[test]
-fn an_installed_file_the_daemon_cannot_read_may_always_be_replaced() {
-    let installed = KeyboxVerdict { defect: Some("invalid XML".to_string()), ..verdict(vec![usable("ecdsa"), usable("rsa")]) };
-    assert!(verdict(vec![revoked("ecdsa")]).may_replace(Some(&installed)));
+fn an_installed_file_the_daemon_cannot_read_ranks_by_its_recovered_keys() {
+    // The next apply writes it again, so its usable keys still count: a revoked keybox from a
+    // mirror does not replace it.
+    let installed = KeyboxVerdict { defect: Some("invalid XML".to_string()), ..verdict(vec![usable("ecdsa")]) };
+    assert!(!verdict(vec![revoked("ecdsa")]).may_replace(Some(&installed)));
+    assert!(verdict(vec![usable("ecdsa")]).may_replace(Some(&installed)));
 }
 
 #[test]
@@ -70,4 +73,13 @@ fn only_usable_keys_are_written_when_there_are_any() {
     assert_eq!(verdict(vec![usable("ecdsa"), usable("rsa")]).keys_to_write(), [0, 1]);
     // A keybox without a usable key keeps every key: a weak keybox the user chose is theirs.
     assert_eq!(verdict(vec![revoked("ecdsa"), revoked("rsa")]).keys_to_write(), [0, 1]);
+    // But never a key whose private key does not match its certificate.
+    assert_eq!(verdict(vec![key("ecdsa", vec![KeyProblem::KeyMismatch]), revoked("rsa")]).keys_to_write(), [1]);
+}
+
+#[test]
+fn a_keybox_is_installable_with_one_matching_key() {
+    assert!(verdict(vec![key("ecdsa", vec![KeyProblem::KeyMismatch]), revoked("rsa")]).is_installable());
+    assert!(!verdict(vec![key("ecdsa", vec![KeyProblem::KeyMismatch])]).is_installable());
+    assert!(!verdict(Vec::new()).is_installable());
 }

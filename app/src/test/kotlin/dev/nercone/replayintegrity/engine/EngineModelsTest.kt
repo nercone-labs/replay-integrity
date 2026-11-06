@@ -93,6 +93,7 @@ class EngineModelsTest {
         )
         assertEquals("invalid XML: attribute value not closed", verdict.defect)
         assertFalse(verdict.strongCapable)
+        assertTrue("installing writes it again as a well-formed keybox", verdict.strongCapableOnceInstalled)
     }
 
     @Test

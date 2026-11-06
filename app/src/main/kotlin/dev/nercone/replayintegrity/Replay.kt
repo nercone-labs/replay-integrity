@@ -141,9 +141,11 @@ class Replay(val context: Context) {
      * Offers the keybox of each source, in order, until the engine installs one or finds it is
      * the installed one. The engine declines a keybox that ranks below the installed one
      * (`--no-downgrade`), so a mirror that serves a revoked or broken keybox never replaces a
-     * working one, and the next source is tried. A source that fails or is declined is a
-     * problem only when no source succeeds: a working fallback leaves nothing to fix. Returns
-     * the report of the source that succeeded, or of the last one declined.
+     * working one, and the next source is tried. A declined keybox is not a problem: the
+     * installed one is better, which is the device as it should be (the checklist shows the
+     * installed keybox either way). A source that cannot be downloaded or checked is a problem
+     * only when no source was installed or declined, because then nothing was learned at all.
+     * Returns the report of the source that was installed, or of the last one declined.
      */
     suspend fun refreshKeybox(privilege: Privilege, sources: List<String>, status: File?, problems: MutableList<String>, log: MutableList<LogLine>): InstallReport? {
         val failures = mutableListOf<String>()
@@ -160,11 +162,10 @@ class Replay(val context: Context) {
                 log += result.log
                 result.value
             } ?: continue
-            val reason = report.declined ?: return report
-            failures += "$url: $reason"
+            if (report.declined == null) return report
             declined = report
         }
-        problems += failures.map { "keybox: $it" }
+        if (declined == null) problems += failures.map { "keybox: $it" }
         return declined
     }
 

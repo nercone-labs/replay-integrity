@@ -194,7 +194,7 @@ impl Engine {
     }
 
     /// Installs a keybox after checking it: it must be read (`KeyboxDocument::read`) and have at
-    /// least one key, and no key whose private key disagrees with its certificate. With
+    /// least one key whose private key matches its certificate (`KeyboxVerdict::is_installable`). With
     /// `KeyboxPolicy::NoDowngrade`, a keybox that ranks below the installed one is declined and
     /// the installed one kept.
     ///
@@ -216,7 +216,7 @@ impl Engine {
         let now = Engine::now();
         let verdict = verifier.check(&document, now);
         if !verdict.is_installable() {
-            return Err(ReplayError::Rejected(vec!["the keybox has no key, or a key whose private key does not match its certificate".to_string()]));
+            return Err(ReplayError::Rejected(vec!["the keybox has no key whose private key matches its certificate".to_string()]));
         }
         if let Some(defect) = &verdict.defect {
             self.log.warning(format!("the keybox is not well-formed ({defect}); its keys were recovered and are written as a well-formed keybox"));
@@ -256,16 +256,18 @@ impl Engine {
         Ok(InstallReport { sha256, changed, verdict: Some(verdict), dropped_keys, declined: None, fingerprint: None })
     }
 
-    /// Writes the installed keybox again as a well-formed keybox when it is not one (it was put
-    /// there by another tool, or by an earlier version), so that the keystore daemon can read
-    /// its keys. Every key is kept: without the status list, no key is judged here. Returns
-    /// whether the file was written.
+    /// Writes the installed keybox again as a well-formed keybox when it is not well-formed XML
+    /// (another tool put it there), so that the keystore daemon can read its keys. The daemon
+    /// reads no key from such a file, so writing the recovered keys cannot leave it worse off;
+    /// every recovered key is written, because without the status list no key is judged here.
+    /// The original is kept in the store as the previous keybox. Returns whether the file was
+    /// written.
     pub fn repair_keybox(&mut self) -> Result<bool, ReplayError> {
         let path = self.config.keybox();
         let Some(bytes) = Files::read_optional(&path)? else { return Ok(false) };
         let document = Engine::read_keybox(&bytes)?;
         let Some(defect) = &document.defect else { return Ok(false) };
-        self.log.warning(format!("the installed keybox is not well-formed ({defect}); it is written again with its keys"));
+        self.log.warning(format!("the installed keybox is not well-formed ({defect}); it is written again with the keys recovered from it"));
         let rendered = document.render();
         self.store.create()?;
         Files::write_atomic(&self.store.previous_keybox(), &bytes, Store::FILE_MODE)?;

@@ -97,34 +97,51 @@ No conforming XML parser reads a key from that document:
    the certificates of the device's own keystore when that keystore works. AlwaysStrong forces
    generate mode (`!`) for Play services, its framework and the Play Store, and TEESimulator-RS's
    own README shows `com.google.android.gms!`. The Play stack now has a mode of its own
-   (`Settings::play_target_mode`), `Generate` by default; older saved settings, which lack the
-   field, read as `Generate` too.
+   (`Settings::play_target_mode`), `Generate` by default. Settings saved before the field
+   existed read as `Generate` too, unless their `target_mode` was not `Auto`: that mode was then
+   chosen on purpose for every target, the Play stack included, so it is kept (`Settings::parse`
+   and the application's `Settings.decode` apply the same rule).
 
 ### What the engine does now
 
 - **Recover, then write a well-formed keybox.** `KeyboxDocument::read` parses strictly and, when
-  that fails, recovers the keys (`KeyboxDocument::recover`): each `<Key` start tag begins a
-  region, and a region with exactly one PEM private key and at least one PEM certificate is a
-  key, its algorithm taken from the private key itself. The markup is never trusted, so broken
-  attributes, a missing end tag or a watermark element can neither hide a key nor add one: every
-  key is a parsed private key with parsed certificates. The parse error is kept as `defect`.
+  that fails, recovers the keys (`KeyboxDocument::recover`) from the PEM blocks alone: comments
+  are removed, every valid PEM block is read in order, each private key begins a key and the
+  certificates up to the next private key are its chain, as a keystore daemon takes them. The
+  algorithm comes from the private key itself. The markup between the blocks is never read, so
+  broken attributes, missing end tags and watermark elements, even one inside a `<Key>`, do not
+  matter, and every key is a parsed private key with parsed certificates. Keybox boundaries and
+  device IDs are markup too and are not recovered: the result is one keybox without a device ID.
+  `defect` is set only when the text is not well-formed XML, which is what makes a daemon read
+  no key; a well-formed document that breaks a rule of the format (a wrong declared count) is
+  still read by the daemon, which ignores those rules, so it has no `defect`.
 - **Install the checked keys, not the downloaded text.** `install-keybox` writes
   `KeyboxDocument::render` of the keys, which every XML parser reads, and only the usable keys
   when there are any (`KeyboxVerdict::keys_to_write`), so the daemon cannot prefer a revoked RSA
   key to a usable EC key. The daemon reads exactly what was checked.
 - **Never downgrade on an automatic refresh.** With `--no-downgrade` (`KeyboxPolicy::NoDowngrade`)
   a keybox is installed only when it ranks at least as high as the installed one
-  (`KeyboxVerdict::rank`: a usable EC key, then the number of usable keys). An installed file
-  with a `defect` ranks lowest, because the daemon reads nothing from it. A keybox that ranks the
+  (`KeyboxVerdict::rank`: a usable EC key, then the number of usable keys). `defect` is not part
+  of the rank on either side: the offered keybox is written again before it is installed, and an
+  installed one with a `defect` is written again by the next `apply`, so the recovered keys are
+  what counts. (An earlier draft ranked such an installed file lowest, which let a revoked
+  download replace a file whose keys the repair would have made usable.) A keybox that ranks the
   same replaces the installed one, because a mirror rotates its keybox before a leak is listed,
   and expiry is not part of the rank for the same reason. A keybox the user imports is installed
   without this check: it is the user's decision.
 - **Repair an installed keybox the daemon cannot read.** `apply` (at every boot, repair and
   refresh) writes the installed keybox again when it has a `defect`, for example one that another
-  tool copied there. Every key is kept; no key is judged without the status list.
+  tool copied there. The daemon reads no key from such a file, so writing the recovered keys
+  cannot leave it worse off. Every recovered key is written, because no key is judged without
+  the status list, and the original is kept in the store as the previous keybox.
 - **Several sources.** The application tries the keybox URL and then the further URLs of the
-  settings in order, until the engine installs one or finds it is the installed one. A failure or
-  a declined keybox is a refresh problem only when no source succeeds.
+  settings in order, until the engine installs one or finds it is the installed one. A declined
+  keybox is never a refresh problem: the installed one is better, which is the device as it
+  should be, and a problem would make the scheduled refresh retry and notify a failure every
+  time a mirror serves a worse keybox. A source that cannot be downloaded or checked is a problem
+  only when no source was installed or declined.
+- **Keys whose private key does not match.** Such a key is never written, and it no longer makes
+  the whole keybox uninstallable: a keybox is installable when one key matches.
 
 ### Alternatives that were set aside
 
@@ -139,6 +156,9 @@ No conforming XML parser reads a key from that document:
 - **Relaxing the strict parser** would make `parse` accept documents that are not keyboxes.
   `parse` stays strict, because it states what a well-formed keybox is, and `recover` is a
   separate, smaller reader.
+- **Cutting a recovered chain where a certificate does not link** was tried and dropped: it made
+  recovery disagree with strict parsing for chains that are given as they are, and a chain that
+  does not link is reported as unusable by the chain check in any case.
 - **Ranking by expiry** would keep an old keybox over a mirror's replacement until the old one
   stopped working, which for a leaked keybox is the moment of revocation.
 

@@ -111,6 +111,7 @@
     <string name="keybox_revoked">Google により失効しています:更新して置き換えてください</string>
     <string name="keybox_weak">%2$d 個中 %1$d 個の鍵が使用可能:使用可能な EC 鍵が必要です</string>
     <string name="keybox_malformed">正しい形式のキーボックスではないため、キーストアは鍵を読み取れません。修復すると鍵を保ったまま書き直します。</string>
+    <string name="candidate_malformed">正しい形式ではありません:インストール時に鍵を正しい形式のキーボックスとして書き直します</string>
     <string name="keybox_partly_revoked">EC 鍵は使用可能ですが、ほかの鍵が失効しています。更新すると、その鍵を除いたキーボックスをインストールします。</string>
     <string name="keybox_unchecked">使用可能ですが、失効を確認できませんでした</string>
     <string name="keybox_valid">有効</string>
