@@ -40,9 +40,27 @@ class SettingsTest {
     }
 
     @Test
+    fun aDocumentWithOneKeyboxSourceKeepsIt() {
+        // A document written before more keybox sources existed keeps its source, and the Play
+        // stack generates its keys, as the engine does for settings without the field.
+        val values = json.decodeFromString(Settings.Values.serializer(), """{"keyboxUrl":"https://mirror.example/key","targetMode":"patch"}""")
+        assertEquals(listOf("https://mirror.example/key"), values.keyboxSources())
+        assertEquals(TargetMode.PATCH, values.targetMode)
+        assertEquals(TargetMode.GENERATE, values.playTargetMode)
+    }
+
+    @Test
+    fun keyboxSourcesAreTriedInOrderWithoutRepeats() {
+        val values = Settings.Values(keyboxUrl = "https://a.example/key", extraKeyboxUrls = listOf("https://b.example/key", "https://a.example/key", "https://c.example/key"))
+        assertEquals(listOf("https://a.example/key", "https://b.example/key", "https://c.example/key"), values.keyboxSources())
+    }
+
+    @Test
     fun theEngineReceivesOnlyItsSettings() {
         val engine = Settings.Values(excludedPackages = listOf("com.game"), spoofOverrides = mapOf("spoofBuild" to false)).engine()
         assertEquals(listOf("com.game"), engine.excludedPackages)
         assertEquals(mapOf("spoofBuild" to false), engine.overrides())
+        assertEquals(TargetMode.GENERATE, engine.playTargetMode)
+        assertEquals(TargetMode.AUTO, Settings.Values(playTargetMode = TargetMode.AUTO).engine().playTargetMode)
     }
 }

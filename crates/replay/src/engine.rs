@@ -27,6 +27,17 @@ pub enum ApplyMode {
     EarlyBoot,
 }
 
+/// When `install_keybox` replaces the installed keybox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyboxPolicy {
+    /// Always, when the keybox is installable: the user chose this file.
+    Replace,
+    /// Only when the keybox ranks at least as high as the installed one
+    /// (`KeyboxVerdict::may_replace`), so that an automatic refresh from a mirror that serves a
+    /// revoked or broken keybox never replaces a working one.
+    NoDowngrade,
+}
+
 /// What an `apply` did.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +50,8 @@ pub struct ApplyReport {
     pub spoof: Vec<(String, bool)>,
     /// The persisted keys removed because their chains were signed by a key no longer present.
     pub stale_keys_removed: usize,
+    /// Whether the installed keybox was not well-formed and was written again (`Engine::repair_keybox`).
+    pub keybox_repaired: bool,
     pub daemon_restarted: bool,
 }
 
@@ -56,10 +69,16 @@ pub enum BootReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallReport {
+    /// The SHA-256 of the file as it was written, or of the installed file when it was kept.
     pub sha256: String,
     /// Whether the file changed what was on disk.
     pub changed: bool,
+    /// The verdict of the keybox that was offered, with every key it held.
     pub verdict: Option<KeyboxVerdict>,
+    /// The keys of the offered keybox that were not written, because others are usable.
+    pub dropped_keys: usize,
+    /// Why the offered file was not installed, when the policy kept the installed one.
+    pub declined: Option<String>,
     pub fingerprint: Option<FingerprintReport>,
 }
 
@@ -104,7 +123,8 @@ pub struct StatusReport {
     /// root manager restricts root, and commands that change the system refuse to run.
     pub missing_capabilities: Vec<String>,
     /// Whether every piece needed for STRONG is present: both components, a strong-capable
-    /// keybox, a sound fingerprint, no conflicts, and Zygisk for the integrity module.
+    /// keybox (a usable EC key, in a file the daemon can read), a sound fingerprint, no
+    /// conflicts, and Zygisk for the integrity module.
     pub strong_ready: bool,
 }
 
@@ -158,9 +178,14 @@ impl Engine {
         Verifier::new(status)
     }
 
+    /// Reads a keybox, recovering the keys of one that is not well-formed (`KeyboxDocument::read`).
+    pub fn read_keybox(bytes: &[u8]) -> Result<KeyboxDocument, ReplayError> {
+        Ok(KeyboxDocument::read(&Engine::text(bytes, "keybox")?)?)
+    }
+
     /// Checks a keybox without installing it.
     pub fn inspect_keybox(&mut self, bytes: &[u8], status_json: Option<&str>) -> Result<KeyboxVerdict, ReplayError> {
-        let document = KeyboxDocument::parse(&Engine::text(bytes, "keybox")?)?;
+        let document = Engine::read_keybox(bytes)?;
         Ok(self.verifier(status_json).check(&document, Engine::now()))
     }
 
@@ -168,30 +193,90 @@ impl Engine {
         Ok(Fingerprint::read(&Engine::text(bytes, "fingerprint")?)?.report(Engine::now().seconds))
     }
 
-    /// Installs a keybox after checking it: it must parse and have at least one key, and no
-    /// key whose private key disagrees with its certificate. The keybox on disk is replaced
-    /// atomically, and the one replaced is kept in the store.
-    pub fn install_keybox(&mut self, bytes: &[u8], source: Option<String>, status_json: Option<&str>) -> Result<InstallReport, ReplayError> {
-        let document = KeyboxDocument::parse(&Engine::text(bytes, "keybox")?)?;
-        let verdict = self.verifier(status_json).check(&document, Engine::now());
+    /// Installs a keybox after checking it: it must be read (`KeyboxDocument::read`) and have at
+    /// least one key, and no key whose private key disagrees with its certificate. With
+    /// `KeyboxPolicy::NoDowngrade`, a keybox that ranks below the installed one is declined and
+    /// the installed one kept.
+    ///
+    /// What is written is never the offered text itself but its keys written again as a
+    /// well-formed keybox (`KeyboxDocument::render`), with only the usable keys when there are
+    /// any (`KeyboxVerdict::keys_to_write`). The keystore daemon then reads exactly the keys
+    /// that were checked: none hidden by broken markup, and no revoked or untrusted key that it
+    /// might prefer to a usable one. The keybox on disk is replaced atomically, and the one
+    /// replaced is kept in the store.
+    pub fn install_keybox(
+        &mut self,
+        bytes: &[u8],
+        source: Option<String>,
+        status_json: Option<&str>,
+        policy: KeyboxPolicy,
+    ) -> Result<InstallReport, ReplayError> {
+        let document = Engine::read_keybox(bytes)?;
+        let verifier = self.verifier(status_json);
+        let now = Engine::now();
+        let verdict = verifier.check(&document, now);
         if !verdict.is_installable() {
             return Err(ReplayError::Rejected(vec!["the keybox has no key, or a key whose private key does not match its certificate".to_string()]));
         }
+        if let Some(defect) = &verdict.defect {
+            self.log.warning(format!("the keybox is not well-formed ({defect}); its keys were recovered and are written as a well-formed keybox"));
+        }
         let path = self.config.keybox();
-        Files::create_directory(&self.layout.tricky_store(), BootHook::DIRECTORY_MODE)?;
-        let sha256 = Files::sha256(bytes);
         let current = Files::read_optional(&path)?;
-        let changed = current.as_deref() != Some(bytes);
+        if policy == KeyboxPolicy::NoDowngrade {
+            let installed = current.as_deref().and_then(|bytes| Engine::read_keybox(bytes).ok()).map(|document| verifier.check(&document, now));
+            if !verdict.may_replace(installed.as_ref()) {
+                let reason = "the installed keybox is better than the offered one, which is kept out".to_string();
+                self.log.warning(format!("{reason}: {} of {} offered key(s) are usable", verdict.usable_keys(), verdict.keys.len()));
+                let sha256 = current.as_deref().map(Files::sha256).unwrap_or_default();
+                return Ok(InstallReport { sha256, changed: false, verdict: Some(verdict), dropped_keys: 0, declined: Some(reason), fingerprint: None });
+            }
+        }
+        let indices = verdict.keys_to_write();
+        let mut index = 0;
+        let written = document.retain_keys(|_| {
+            let keep = indices.contains(&index);
+            index += 1;
+            keep
+        });
+        let dropped_keys = verdict.keys.len() - indices.len();
+        let rendered = written.render();
+        Files::create_directory(&self.layout.tricky_store(), BootHook::DIRECTORY_MODE)?;
+        let sha256 = Files::sha256(rendered.as_bytes());
+        let changed = current.as_deref() != Some(rendered.as_bytes());
         if changed {
             self.store.create()?;
             if let Some(previous) = &current {
                 Files::write_atomic(&self.store.previous_keybox(), previous, Store::FILE_MODE)?;
             }
-            Files::write_atomic(&path, bytes, KeystoreConfig::KEYBOX_MODE)?;
-            self.log.info(format!("installed a keybox: {} of {} key(s) usable now", verdict.usable_keys(), verdict.keys.len()));
+            Files::write_atomic(&path, rendered.as_bytes(), KeystoreConfig::KEYBOX_MODE)?;
+            self.log.info(format!("installed a keybox: {} of {} key(s) usable now, {dropped_keys} left out", verdict.usable_keys(), verdict.keys.len()));
         }
         self.update_state(|state| state.keybox = Some(InstalledFile { sha256: sha256.clone(), source, installed_at: Log::now() }))?;
-        Ok(InstallReport { sha256, changed, verdict: Some(verdict), fingerprint: None })
+        Ok(InstallReport { sha256, changed, verdict: Some(verdict), dropped_keys, declined: None, fingerprint: None })
+    }
+
+    /// Writes the installed keybox again as a well-formed keybox when it is not one (it was put
+    /// there by another tool, or by an earlier version), so that the keystore daemon can read
+    /// its keys. Every key is kept: without the status list, no key is judged here. Returns
+    /// whether the file was written.
+    pub fn repair_keybox(&mut self) -> Result<bool, ReplayError> {
+        let path = self.config.keybox();
+        let Some(bytes) = Files::read_optional(&path)? else { return Ok(false) };
+        let document = Engine::read_keybox(&bytes)?;
+        let Some(defect) = &document.defect else { return Ok(false) };
+        self.log.warning(format!("the installed keybox is not well-formed ({defect}); it is written again with its keys"));
+        let rendered = document.render();
+        self.store.create()?;
+        Files::write_atomic(&self.store.previous_keybox(), &bytes, Store::FILE_MODE)?;
+        Files::write_atomic(&path, rendered.as_bytes(), KeystoreConfig::KEYBOX_MODE)?;
+        let sha256 = Files::sha256(rendered.as_bytes());
+        self.update_state(|state| {
+            if let Some(installed) = &mut state.keybox {
+                installed.sha256 = sha256;
+            }
+        })?;
+        Ok(true)
     }
 
     /// Installs a fingerprint (`custom.pif.prop`, or `custom.pif.json` converted to it) after
@@ -217,7 +302,7 @@ impl Engine {
         if changed {
             self.log.info(format!("installed a fingerprint of {}", report.fingerprint.as_deref().unwrap_or("an unknown build")));
         }
-        Ok(InstallReport { sha256, changed, verdict: None, fingerprint: Some(report) })
+        Ok(InstallReport { sha256, changed, verdict: None, dropped_keys: 0, declined: None, fingerprint: Some(report) })
     }
 
     /// The installed fingerprint, if any.
@@ -287,7 +372,7 @@ impl Engine {
     /// keybox: the signers that a persisted key's chain must match to be current.
     fn keybox_signers(&self) -> Result<Vec<Vec<u8>>, ReplayError> {
         let Some(bytes) = Files::read_optional(&self.config.keybox())? else { return Ok(Vec::new()) };
-        let document = KeyboxDocument::parse(&Engine::text(&bytes, "keybox")?)?;
+        let document = Engine::read_keybox(&bytes)?;
         Ok(document.keys().filter_map(|key| key.certificates.first().map(|certificate| certificate.der.clone())).collect())
     }
 
@@ -351,8 +436,9 @@ impl Engine {
 
     /// Re-applies the configuration without fetching anything: saves `settings` for the boot
     /// hook (except at boot, which applies the saved ones), rebuilds `target.txt`, re-applies the
-    /// spoof flags and the security patch from the installed fingerprint, removes stale
-    /// persisted keys, and restarts as `mode` says. This is what keeps the verdict from
+    /// spoof flags and the security patch from the installed fingerprint, writes the installed
+    /// keybox again when it is not well-formed (`repair_keybox`), removes stale persisted keys,
+    /// and restarts as `mode` says. This is what keeps the verdict from
     /// drifting after the modules' own scripts run.
     pub fn apply(&mut self, settings: &Settings, mode: ApplyMode) -> Result<ApplyReport, ReplayError> {
         let _lock = self.store.lock_apply()?;
@@ -386,6 +472,13 @@ impl Engine {
         } else {
             self.log.warning("no fingerprint is installed; the spoof flags are not written");
         }
+        let keybox_repaired = match self.repair_keybox() {
+            Ok(repaired) => repaired,
+            Err(error) => {
+                self.log.warning(format!("the installed keybox cannot be read and is kept as it is: {error}"));
+                false
+            }
+        };
         let stale_keys_removed = self.remove_stale_keys()?;
         let daemon_restarted = if mode == ApplyMode::Restart { self.restart()? } else { false };
         self.update_state(|state| state.applied_at = Some(Log::now()))?;
@@ -395,6 +488,7 @@ impl Engine {
             security_patch,
             spoof: spoof.values.iter().map(|(flag, value)| (flag.key().to_string(), *value)).collect(),
             stale_keys_removed,
+            keybox_repaired,
             daemon_restarted,
         })
     }

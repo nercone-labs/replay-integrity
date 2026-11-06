@@ -32,8 +32,13 @@ class Settings(context: Context) {
         val autoKeybox: Boolean = true,
         /** Whether the fingerprint is downloaded and replaced on every refresh. */
         val autoFingerprint: Boolean = true,
-        /** Where the keybox is downloaded from (base64 of the keybox XML). */
+        /** Where the keybox is downloaded from (the keybox XML, or base64 of it). */
         val keyboxUrl: String = Downloader.DEFAULT_KEYBOX_URL,
+        /**
+         * More keybox sources, tried in order after `keyboxUrl` when it cannot be downloaded or
+         * serves a keybox that ranks below the installed one.
+         */
+        val extraKeyboxUrls: List<String> = emptyList(),
         /** Where the fingerprint is downloaded from (a `custom.pif.prop`). */
         val fingerprintUrl: String = Downloader.DEFAULT_FINGERPRINT_URL,
         /** Hours between scheduled refreshes; 0 turns them off. */
@@ -64,8 +69,10 @@ class Settings(context: Context) {
         val extraPackages: List<String> = emptyList(),
         /** Installed packages left out of the attestation targets. */
         val excludedPackages: List<String> = emptyList(),
-        /** How TEESimulator-RS handles the keys of every target. */
+        /** How TEESimulator-RS handles the keys of every target but the Play stack. */
         val targetMode: TargetMode = TargetMode.AUTO,
+        /** How TEESimulator-RS handles the keys of the Play stack; generating them is recommended. */
+        val playTargetMode: TargetMode = TargetMode.GENERATE,
         /** Overrides of the spoof flags, by key; a flag without one has its recommended value. */
         val spoofOverrides: Map<String, Boolean> = emptyMap(),
         /** When the last refresh finished, in milliseconds since the Unix epoch. */
@@ -73,11 +80,15 @@ class Settings(context: Context) {
         /** The problems of the last refresh; empty when it succeeded. */
         val lastRefreshProblems: List<String> = emptyList(),
     ) {
+        /** The keybox sources in the order they are tried: `keyboxUrl`, then `extraKeyboxUrls`. */
+        fun keyboxSources(): List<String> = (listOf(keyboxUrl) + extraKeyboxUrls).distinct()
+
         /** The part of the settings that the engine reads. */
         fun engine(): EngineSettings = EngineSettings(
             extraPackages = extraPackages,
             excludedPackages = excludedPackages,
             targetMode = targetMode,
+            playTargetMode = playTargetMode,
             spoofOverrides = spoofOverrides.map { (key, value) -> EngineSettings.override(key, value) },
         )
     }

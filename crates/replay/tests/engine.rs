@@ -4,9 +4,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+use keybox::KeyboxDocument;
 use replay::{
-    ApplyMode, BootHook, BootReport, Conflicts, Engine, Files, Fingerprint, FingerprintProblem, Layout, Log, Module, PackageWatcher, PatchDate, Settings,
-    SpoofFlag, SpoofFlags, Target, TargetList, TargetMode, WatchReport,
+    ApplyMode, BootHook, BootReport, Conflicts, Engine, Files, Fingerprint, FingerprintProblem, KeyboxPolicy, Layout, Log, Module, PackageWatcher, PatchDate,
+    Settings, SpoofFlag, SpoofFlags, Target, TargetList, TargetMode, WatchReport,
 };
 
 const TEST_KEYBOX: &str = include_str!("../../keybox/tests/fixtures/test-keybox.xml");
@@ -103,6 +104,21 @@ fn the_target_list_always_includes_the_play_stack_and_excludes_xposed() {
     assert_eq!(parsed.targets[1].mode, TargetMode::Auto);
 }
 
+/// The private keys and certificates of a keybox, which is what a keystore daemon reads.
+fn key_material(text: &str) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+    KeyboxDocument::read(text)
+        .unwrap()
+        .keys()
+        .map(|key| (key.private_key_block.data.clone(), key.certificates.iter().map(|certificate| certificate.der.clone()).collect()))
+        .collect()
+}
+
+/// The keybox fixture with the defect of a keybox a mirror served: a `DeviceID` value without
+/// its closing quote, which hides every `<Key>` from an XML parser.
+fn malformed_keybox() -> String {
+    TEST_KEYBOX.replacen("not an attestation key)\">", "not an attestation key)>", 1)
+}
+
 #[test]
 fn a_fresh_keybox_is_installed_and_the_previous_one_kept() {
     let root = temporary_root();
@@ -111,14 +127,82 @@ fn a_fresh_keybox_is_installed_and_the_previous_one_kept() {
     // Seed an old keybox so installing a new one keeps the old.
     fs::write(&keybox_path, "old keybox").unwrap();
     let mut engine = Engine::new(layout.clone());
-    let report = engine.install_keybox(TEST_KEYBOX.as_bytes(), Some("test".to_string()), None).unwrap();
+    let report = engine.install_keybox(TEST_KEYBOX.as_bytes(), Some("test".to_string()), None, KeyboxPolicy::Replace).unwrap();
     assert!(report.changed);
+    assert_eq!(report.declined, None);
     // The throwaway keybox has no Google-signed chain, so no key is "usable" (STRONG) — but it is installable (structurally sound).
     assert!(report.verdict.unwrap().is_installable());
-    assert_eq!(fs::read_to_string(&keybox_path).unwrap(), TEST_KEYBOX);
+    // What is installed is a well-formed keybox with the same keys.
+    let installed = fs::read_to_string(&keybox_path).unwrap();
+    assert_eq!(KeyboxDocument::parse(&installed).unwrap().defect, None);
+    assert_eq!(key_material(&installed), key_material(TEST_KEYBOX));
+    assert_eq!(report.sha256, Files::sha256(installed.as_bytes()));
     assert_eq!(fs::read_to_string(layout.store().join("previous-keybox.xml")).unwrap(), "old keybox");
     // Installing the same keybox again reports no change.
-    assert!(!engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None).unwrap().changed);
+    assert!(!engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::Replace).unwrap().changed);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_malformed_keybox_is_installed_as_a_well_formed_one() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let mut engine = Engine::new(layout.clone());
+    let malformed = malformed_keybox();
+    let report = engine.install_keybox(malformed.as_bytes(), None, None, KeyboxPolicy::NoDowngrade).unwrap();
+    assert!(report.changed);
+    assert!(report.verdict.unwrap().defect.is_some());
+    let installed = fs::read_to_string(layout.tricky_store().join("keybox.xml")).unwrap();
+    assert_eq!(KeyboxDocument::parse(&installed).unwrap().defect, None);
+    assert_eq!(key_material(&installed), key_material(TEST_KEYBOX));
+    // The same malformed keybox offered again changes nothing and is not declined.
+    let again = engine.install_keybox(malformed.as_bytes(), None, None, KeyboxPolicy::NoDowngrade).unwrap();
+    assert!(!again.changed);
+    assert_eq!(again.declined, None);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_keybox_that_no_daemon_can_read_is_replaced_without_downgrade_checks() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let keybox_path = layout.tricky_store().join("keybox.xml");
+    fs::write(&keybox_path, malformed_keybox()).unwrap();
+    let mut engine = Engine::new(layout.clone());
+    let report = engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::NoDowngrade).unwrap();
+    assert!(report.changed);
+    assert_eq!(report.declined, None);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn apply_writes_a_malformed_installed_keybox_again() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let keybox_path = layout.tricky_store().join("keybox.xml");
+    let malformed = malformed_keybox();
+    fs::write(&keybox_path, &malformed).unwrap();
+    let mut engine = Engine::new(layout.clone());
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    assert!(report.keybox_repaired);
+    let installed = fs::read_to_string(&keybox_path).unwrap();
+    assert_eq!(KeyboxDocument::parse(&installed).unwrap().defect, None);
+    assert_eq!(key_material(&installed), key_material(TEST_KEYBOX));
+    assert_eq!(fs::read_to_string(layout.store().join("previous-keybox.xml")).unwrap(), malformed);
+    // A well-formed keybox is left alone.
+    assert!(!engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap().keybox_repaired);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_keybox_without_a_key_is_rejected_and_the_installed_one_kept() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let keybox_path = layout.tricky_store().join("keybox.xml");
+    fs::write(&keybox_path, TEST_KEYBOX).unwrap();
+    let mut engine = Engine::new(layout.clone());
+    assert!(engine.install_keybox(b"<AndroidAttestation></AndroidAttestation>", None, None, KeyboxPolicy::Replace).is_err());
+    assert_eq!(fs::read_to_string(&keybox_path).unwrap(), TEST_KEYBOX);
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -158,6 +242,38 @@ fn excluded_packages_and_the_target_mode_shape_the_list() {
     assert!(packages.contains(&"com.google.android.gms"));
     assert!(list.targets.iter().all(|target| target.mode == TargetMode::Generate));
     assert!(list.render().lines().all(|line| line.ends_with('!')));
+}
+
+#[test]
+fn the_play_stack_generates_its_keys_by_default() {
+    // TEESimulator-RS documents `com.google.android.gms!`: Play Integrity always gets a key
+    // attested with the keybox, whatever the mode of the other targets.
+    let third_party = ["com.example.bank".to_string()];
+    let list = TargetList::build(&[], &third_party, &Settings::default());
+    for target in &list.targets {
+        let expected = if TargetList::ALWAYS.contains(&target.package.as_str()) { TargetMode::Generate } else { TargetMode::Auto };
+        assert_eq!(target.mode, expected, "{}", target.package);
+    }
+    assert!(list.render().contains("com.google.android.gms!\n"));
+    assert!(list.render().contains("com.example.bank\n"));
+}
+
+#[test]
+fn the_mode_of_the_play_stack_is_a_setting_of_its_own() {
+    let settings = Settings { play_target_mode: TargetMode::Auto, target_mode: TargetMode::Patch, ..Settings::default() };
+    let list = TargetList::build(&[], &["com.example.bank".to_string()], &settings);
+    for target in &list.targets {
+        let expected = if TargetList::ALWAYS.contains(&target.package.as_str()) { TargetMode::Auto } else { TargetMode::Patch };
+        assert_eq!(target.mode, expected, "{}", target.package);
+    }
+}
+
+#[test]
+fn settings_saved_before_the_play_mode_existed_generate_for_the_play_stack() {
+    let settings = Settings::parse(br#"{"extraPackages":[],"excludedPackages":[],"targetMode":"auto","spoofOverrides":[]}"#).unwrap();
+    assert_eq!(settings.play_target_mode, TargetMode::Generate);
+    let settings = Settings::parse(br#"{"targetMode":"auto","playTargetMode":"patch"}"#).unwrap();
+    assert_eq!(settings.play_target_mode, TargetMode::Patch);
 }
 
 #[test]

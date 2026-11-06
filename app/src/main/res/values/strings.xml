@@ -109,7 +109,9 @@
     <string name="zygisk_missing">Not available: the build spoof cannot load</string>
     <string name="keybox_none">No keybox installed</string>
     <string name="keybox_revoked">Revoked by Google: refresh to replace it</string>
-    <string name="keybox_weak">%1$d of %2$d keys usable: a usable EC key and RSA key are needed</string>
+    <string name="keybox_weak">%1$d of %2$d keys usable: a usable EC key is needed</string>
+    <string name="keybox_malformed">The file is not a well-formed keybox, so the keystore reads no key from it. Repair writes it again with its keys.</string>
+    <string name="keybox_partly_revoked">An EC key is usable, but another key is revoked. Refresh to install a keybox without it.</string>
     <string name="keybox_unchecked">Usable, but revocation could not be checked</string>
     <string name="keybox_valid">Valid</string>
     <string name="keybox_valid_until">Valid until %1$s</string>
@@ -158,7 +160,7 @@
     <string name="keybox_summary">Keys</string>
     <string name="keybox_usable">%1$d of %2$d usable</string>
     <string name="keybox_strong">Can reach STRONG</string>
-    <string name="keybox_strong_needs">No: a usable EC key and a usable RSA key are needed</string>
+    <string name="keybox_strong_needs">No: a usable EC key, in a well-formed file, is needed</string>
     <string name="keybox_revocation">Revocation</string>
     <string name="keybox_revocation_checked">Checked against Google\'s status list</string>
     <string name="keybox_revocation_unchecked">Not checked: the status list could not be downloaded</string>
@@ -227,6 +229,8 @@
     <string name="problem_not_release">Not a user build with release keys</string>
     <string name="problem_invalid_patch">SECURITY_PATCH is not a date</string>
     <string name="targets_mode">Key handling</string>
+    <string name="targets_play_mode">Key handling of Google Play</string>
+    <string name="targets_play_mode_help">For Play services, its framework and the Play Store. Generate is recommended, as TEESimulator-RS documents: Play Integrity then always gets a key attested with the keybox.</string>
     <string name="targets_mode_help">Automatic patches the certificates of the device\'s own keystore when it works, and generates keys otherwise. Generate always generates keys from the keybox; Patch always patches.</string>
     <string name="target_mode_auto">Automatic</string>
     <string name="target_mode_generate">Generate</string>
@@ -256,6 +260,8 @@
     <string name="settings_unmetered_help">Scheduled refreshes wait for Wi-Fi or another unmetered network.</string>
     <string name="settings_sources">Sources</string>
     <string name="settings_keybox_url">Keybox URL</string>
+    <string name="settings_extra_keybox_urls">More keybox URLs</string>
+    <string name="settings_extra_keybox_urls_help">Tried in order when the keybox URL cannot be downloaded, or serves a keybox worse than the installed one. A keybox is installed only when it is at least as good as the installed one.</string>
     <string name="settings_fingerprint_url">Fingerprint URL</string>
     <string name="settings_sources_reset">Use the default sources</string>
     <string name="settings_sources_reset_help">The keybox and fingerprint sources of AlwaysStrong.</string>

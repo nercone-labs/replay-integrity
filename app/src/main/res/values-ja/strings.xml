@@ -109,7 +109,9 @@
     <string name="zygisk_missing">利用できません:ビルド偽装を読み込めません</string>
     <string name="keybox_none">キーボックスがインストールされていません</string>
     <string name="keybox_revoked">Google により失効しています:更新して置き換えてください</string>
-    <string name="keybox_weak">%2$d 個中 %1$d 個の鍵が使用可能:EC と RSA の使用可能な鍵が必要です</string>
+    <string name="keybox_weak">%2$d 個中 %1$d 個の鍵が使用可能:使用可能な EC 鍵が必要です</string>
+    <string name="keybox_malformed">正しい形式のキーボックスではないため、キーストアは鍵を読み取れません。修復すると鍵を保ったまま書き直します。</string>
+    <string name="keybox_partly_revoked">EC 鍵は使用可能ですが、ほかの鍵が失効しています。更新すると、その鍵を除いたキーボックスをインストールします。</string>
     <string name="keybox_unchecked">使用可能ですが、失効を確認できませんでした</string>
     <string name="keybox_valid">有効</string>
     <string name="keybox_valid_until">%1$s まで有効</string>
@@ -158,7 +160,7 @@
     <string name="keybox_summary">鍵</string>
     <string name="keybox_usable">%2$d 個中 %1$d 個が使用可能</string>
     <string name="keybox_strong">STRONG に到達可能</string>
-    <string name="keybox_strong_needs">いいえ:使用可能な EC 鍵と RSA 鍵の両方が必要です</string>
+    <string name="keybox_strong_needs">いいえ:正しい形式のファイルに、使用可能な EC 鍵が必要です</string>
     <string name="keybox_revocation">失効確認</string>
     <string name="keybox_revocation_checked">Google の失効リストで確認済み</string>
     <string name="keybox_revocation_unchecked">未確認:失効リストを取得できませんでした</string>
@@ -227,6 +229,8 @@
     <string name="problem_not_release">release-keys の user ビルドではありません</string>
     <string name="problem_invalid_patch">SECURITY_PATCH が日付ではありません</string>
     <string name="targets_mode">鍵の扱い</string>
+    <string name="targets_play_mode">Google Play の鍵の扱い</string>
+    <string name="targets_play_mode_help">Play 開発者サービス、そのフレームワーク、Play ストアに適用します。TEESimulator-RS の説明どおり「生成」を推奨します。Play Integrity が常にキーボックスで証明された鍵を受け取ります。</string>
     <string name="targets_mode_help">自動は、端末本来のキーストアが使えればその証明書を書き換え、使えなければ鍵を生成します。生成は常にキーボックスから鍵を生成し、書き換えは常に書き換えます。</string>
     <string name="target_mode_auto">自動</string>
     <string name="target_mode_generate">生成</string>
@@ -256,6 +260,8 @@
     <string name="settings_unmetered_help">定期更新を Wi-Fi などの従量制でないネットワークまで待ちます。</string>
     <string name="settings_sources">取得元</string>
     <string name="settings_keybox_url">キーボックスの URL</string>
+    <string name="settings_extra_keybox_urls">その他のキーボックスの URL</string>
+    <string name="settings_extra_keybox_urls_help">キーボックスの URL からダウンロードできないとき、またはインストール済みのものより劣るキーボックスが配布されているときに、順に試します。インストール済みのもの以上に良いキーボックスだけをインストールします。</string>
     <string name="settings_fingerprint_url">フィンガープリントの URL</string>
     <string name="settings_sources_reset">既定の取得元に戻す</string>
     <string name="settings_sources_reset_help">AlwaysStrong と同じキーボックスとフィンガープリントの取得元です。</string>

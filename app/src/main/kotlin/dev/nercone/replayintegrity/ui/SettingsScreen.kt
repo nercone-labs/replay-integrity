@@ -92,17 +92,27 @@ object SettingsScreen {
 
             Widgets.Header(stringResource(R.string.settings_sources))
             Widgets.Group {
-                Widgets.Panel(0, 3) {
+                Widgets.Panel(0, 4) {
                     Widgets.TextSetting(settings.keyboxUrl, stringResource(R.string.settings_keybox_url), Downloader::isAcceptable, { url -> model.configure { it.copy(keyboxUrl = url) } })
                 }
-                Widgets.Panel(1, 3) {
+                Widgets.Panel(1, 4) {
+                    Text(stringResource(R.string.settings_extra_keybox_urls), style = MaterialTheme.typography.labelLarge)
+                    Widgets.StringList(
+                        items = settings.extraKeyboxUrls,
+                        label = stringResource(R.string.settings_keybox_url),
+                        validate = { Downloader.isAcceptable(it) && it != settings.keyboxUrl },
+                        onChange = { list -> model.configure { it.copy(extraKeyboxUrls = list) } },
+                    )
+                    Text(stringResource(R.string.settings_extra_keybox_urls_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary)
+                }
+                Widgets.Panel(2, 4) {
                     Widgets.TextSetting(settings.fingerprintUrl, stringResource(R.string.settings_fingerprint_url), Downloader::isAcceptable, { url -> model.configure { it.copy(fingerprintUrl = url) } })
                 }
                 Widgets.Item(
-                    2, 3,
+                    3, 4,
                     headline = stringResource(R.string.settings_sources_reset),
                     supporting = stringResource(R.string.settings_sources_reset_help),
-                    enabled = settings.keyboxUrl != Downloader.DEFAULT_KEYBOX_URL || settings.fingerprintUrl != Downloader.DEFAULT_FINGERPRINT_URL,
+                    enabled = settings.keyboxUrl != Downloader.DEFAULT_KEYBOX_URL || settings.extraKeyboxUrls.isNotEmpty() || settings.fingerprintUrl != Downloader.DEFAULT_FINGERPRINT_URL,
                     onClick = model::resetSources,
                 )
             }

@@ -59,6 +59,10 @@ object TargetsScreen {
                     Widgets.Segments(TargetMode.entries, settings.targetMode, { Labels.targetMode(it) }, model::setTargetMode)
                     Text(stringResource(R.string.targets_mode_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
 
+                    Widgets.Header(stringResource(R.string.targets_play_mode))
+                    Widgets.Segments(TargetMode.entries, settings.playTargetMode, { Labels.targetMode(it) }, model::setPlayTargetMode)
+                    Text(stringResource(R.string.targets_play_mode_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
+
                     Widgets.Header(stringResource(R.string.targets_extra))
                     Widgets.Group {
                         Widgets.Panel(0, 1) {

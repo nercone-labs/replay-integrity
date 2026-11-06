@@ -403,8 +403,10 @@ object HomeScreen {
     fun keyboxCheck(keybox: KeyboxVerdict?): Check {
         val (level, text) = when {
             keybox == null -> Level.ERROR to stringResource(R.string.keybox_none)
-            keybox.revoked -> Level.ERROR to stringResource(R.string.keybox_revoked)
+            keybox.defect != null -> Level.ERROR to stringResource(R.string.keybox_malformed)
+            !keybox.strongCapable && keybox.revoked -> Level.ERROR to stringResource(R.string.keybox_revoked)
             !keybox.strongCapable -> Level.ERROR to stringResource(R.string.keybox_weak, keybox.usableKeys, keybox.keys.size)
+            keybox.revoked -> Level.WARNING to stringResource(R.string.keybox_partly_revoked)
             !keybox.revocationChecked -> Level.WARNING to stringResource(R.string.keybox_unchecked)
             else -> Level.OK to (keybox.expires?.let { stringResource(R.string.keybox_valid_until, Labels.date(it)) } ?: stringResource(R.string.keybox_valid))
         }

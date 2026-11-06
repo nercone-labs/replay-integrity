@@ -219,6 +219,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setTargetMode(mode: TargetMode) = configure { it.copy(targetMode = mode) }
 
+    fun setPlayTargetMode(mode: TargetMode) = configure { it.copy(playTargetMode = mode) }
+
     /** Sets the spoof flag `key` to `value`, or to its recommended value with `null`. */
     fun setSpoof(key: String, value: Boolean?) = configure { it.copy(spoofOverrides = if (value == null) it.spoofOverrides - key else it.spoofOverrides + (key to value)) }
 
@@ -226,7 +228,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         it.copy(excludedPackages = if (excluded) (it.excludedPackages + packageName).distinct() else it.excludedPackages - packageName)
     }
 
-    fun resetSources() = configure { it.copy(keyboxUrl = Downloader.DEFAULT_KEYBOX_URL, fingerprintUrl = Downloader.DEFAULT_FINGERPRINT_URL) }
+    fun resetSources() = configure { it.copy(keyboxUrl = Downloader.DEFAULT_KEYBOX_URL, extraKeyboxUrls = emptyList(), fingerprintUrl = Downloader.DEFAULT_FINGERPRINT_URL) }
 
     fun dismissOutcome() = state.update { it.copy(outcome = null) }
 

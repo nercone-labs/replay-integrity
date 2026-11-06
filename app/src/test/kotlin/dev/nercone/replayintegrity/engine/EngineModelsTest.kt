@@ -55,7 +55,8 @@ class EngineModelsTest {
         val keybox = report.keybox!!
         assertEquals(1, keybox.usableKeys)
         assertTrue("a chain problem names its reason in detail", keybox.revoked)
-        assertFalse("the RSA key is revoked, so STRONG is out of reach", keybox.strongCapable)
+        assertTrue("a usable EC key reaches STRONG even though the RSA key is revoked", keybox.strongCapable)
+        assertNull(keybox.defect)
         assertEquals(2_000_000_000L, keybox.expires)
         assertTrue(keybox.hasUsable(KeyboxVerdict.ECDSA))
         assertEquals("revoked", keybox.keys[1].problems[0].name)
@@ -76,11 +77,34 @@ class EngineModelsTest {
     }
 
     @Test
-    fun aKeyboxWithUsableKeysOfBothAlgorithmsCanReachStrong() {
+    fun aKeyboxWithAUsableECKeyCanReachStrong() {
         // `KeyAlgorithm::name` of the keybox crate writes the names in lowercase.
-        val verdict = KeyboxVerdict(listOf(KeyVerdict("ecdsa"), KeyVerdict("rsa")), revocationChecked = true)
-        assertTrue(verdict.strongCapable)
-        assertFalse(KeyboxVerdict(listOf(KeyVerdict("ecdsa"))).strongCapable)
+        assertTrue(KeyboxVerdict(listOf(KeyVerdict("ecdsa"), KeyVerdict("rsa")), revocationChecked = true).strongCapable)
+        assertTrue("an RSA key is not needed", KeyboxVerdict(listOf(KeyVerdict("ecdsa"))).strongCapable)
+        assertFalse("an RSA key alone is not enough", KeyboxVerdict(listOf(KeyVerdict("rsa"))).strongCapable)
+        assertFalse(KeyboxVerdict().strongCapable)
+    }
+
+    @Test
+    fun aKeyboxTheDaemonCannotReadCannotReachStrong() {
+        val verdict = json.decodeFromString(
+            KeyboxVerdict.serializer(),
+            """{"keys":[{"algorithm":"ecdsa","serial":"01","root":"CN=root","expires":null,"problems":[]}],"revocationChecked":true,"defect":"invalid XML: attribute value not closed"}""",
+        )
+        assertEquals("invalid XML: attribute value not closed", verdict.defect)
+        assertFalse(verdict.strongCapable)
+    }
+
+    @Test
+    fun anInstallReportSaysWhyAKeyboxWasDeclined() {
+        val report = json.decodeFromString(
+            InstallReport.serializer(),
+            """{"sha256":"ab","changed":false,"verdict":null,"droppedKeys":1,"declined":"the installed keybox is better","fingerprint":null}""",
+        )
+        assertEquals("the installed keybox is better", report.declined)
+        assertEquals(1, report.droppedKeys)
+        assertFalse(report.changed)
+        assertNull(json.decodeFromString(InstallReport.serializer(), """{"sha256":"ab","changed":true,"declined":null}""").declined)
     }
 
     @Test
@@ -98,6 +122,7 @@ class EngineModelsTest {
         )
         val encoded = json.parseToJsonElement(json.encodeToString(EngineSettings.serializer(), settings)).jsonObject
         assertEquals(JsonPrimitive("patch"), encoded["targetMode"])
+        assertEquals("the Play stack generates by default", JsonPrimitive("generate"), encoded["playTargetMode"])
         // A Rust tuple is a two-element array.
         assertEquals(JsonArray(listOf(JsonArray(listOf(JsonPrimitive("spoofProvider"), JsonPrimitive(true))))), encoded["spoofOverrides"])
         assertEquals(JsonArray(listOf(JsonPrimitive("com.extra"))), encoded["extraPackages"])
@@ -109,6 +134,7 @@ class EngineModelsTest {
         val other = EngineSettings(extraPackages = listOf("c.d", "a.b"), spoofOverrides = listOf(EngineSettings.override("spoofProps", false), EngineSettings.override("spoofBuild", true)))
         assertTrue(one.sameAs(other))
         assertFalse(one.sameAs(other.copy(targetMode = TargetMode.GENERATE)))
+        assertFalse(one.sameAs(other.copy(playTargetMode = TargetMode.AUTO)))
         assertFalse(one.sameAs(other.copy(spoofOverrides = listOf(EngineSettings.override("spoofBuild", false)))))
     }
 

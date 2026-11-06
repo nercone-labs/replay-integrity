@@ -7,6 +7,7 @@ import dev.nercone.replayintegrity.engine.ApplyReport
 import dev.nercone.replayintegrity.engine.BootHook
 import dev.nercone.replayintegrity.engine.Component
 import dev.nercone.replayintegrity.engine.Engine
+import dev.nercone.replayintegrity.engine.EngineException
 import dev.nercone.replayintegrity.engine.EngineResult
 import dev.nercone.replayintegrity.engine.FingerprintReport
 import dev.nercone.replayintegrity.engine.InstallReport
@@ -106,7 +107,8 @@ class Replay(val context: Context) {
      * what was fetched, then applies the configuration and installs or removes the boot hook. A
      * download or installation failure is a problem, not an error: the installed files stay
      * and the apply still runs, so a bad network or a bad mirror never leaves the device worse
-     * off.
+     * off. The keybox is taken from the first source that offers one at least as good as the
+     * installed one (`refreshKeybox`).
      */
     suspend fun refresh(): Refreshed = operations.withLock {
         val privilege = privilege()
@@ -114,14 +116,7 @@ class Replay(val context: Context) {
         val problems = mutableListOf<String>()
         val log = mutableListOf<LogLine>()
         val status = statusList()
-        val keybox = if (values.autoKeybox) {
-            attempt("keybox", problems) {
-                val fetched = downloader.keybox(values.keyboxUrl)
-                engine.installKeybox(privilege, engine.write(KEYBOX, fetched.bytes), fetched.source, status).also { log += it.log }.value
-            }
-        } else {
-            null
-        }
+        val keybox = if (values.autoKeybox) refreshKeybox(privilege, values.keyboxSources(), status, problems, log) else null
         val fingerprint = if (values.autoFingerprint) {
             attempt("fingerprint", problems) {
                 val fetched = downloader.fingerprint(values.fingerprintUrl)
@@ -140,6 +135,37 @@ class Replay(val context: Context) {
         val hook = attempt("boot hook", problems) { synchronizeHook(privilege).also { log += it.log }.value }
         settings.update { it.copy(lastRefreshAt = System.currentTimeMillis(), lastRefreshProblems = problems) }
         Refreshed(keybox, fingerprint, apply, hook, problems, log)
+    }
+
+    /**
+     * Offers the keybox of each source, in order, until the engine installs one or finds it is
+     * the installed one. The engine declines a keybox that ranks below the installed one
+     * (`--no-downgrade`), so a mirror that serves a revoked or broken keybox never replaces a
+     * working one, and the next source is tried. A source that fails or is declined is a
+     * problem only when no source succeeds: a working fallback leaves nothing to fix. Returns
+     * the report of the source that succeeded, or of the last one declined.
+     */
+    suspend fun refreshKeybox(privilege: Privilege, sources: List<String>, status: File?, problems: MutableList<String>, log: MutableList<LogLine>): InstallReport? {
+        val failures = mutableListOf<String>()
+        var declined: InstallReport? = null
+        for (url in sources) {
+            val report = attempt(url, failures) {
+                val fetched = downloader.keybox(url)
+                val result = try {
+                    engine.installKeybox(privilege, engine.write(KEYBOX, fetched.bytes), fetched.source, status, noDowngrade = true)
+                } catch (error: EngineException) {
+                    log += error.log
+                    throw error
+                }
+                log += result.log
+                result.value
+            } ?: continue
+            val reason = report.declined ?: return report
+            failures += "$url: $reason"
+            declined = report
+        }
+        problems += failures.map { "keybox: $it" }
+        return declined
     }
 
     /**
@@ -220,7 +246,7 @@ class Replay(val context: Context) {
         val source = "file:${candidate.name}"
         val values = settings.values.value
         val installed = when (candidate) {
-            is Candidate.Keybox -> engine.installKeybox(privilege, candidate.file, source, statusList())
+            is Candidate.Keybox -> engine.installKeybox(privilege, candidate.file, source, statusList(), noDowngrade = false)
             is Candidate.Fingerprint -> engine.installFingerprint(privilege, candidate.file, source, values.engine())
         }
         settings.update {

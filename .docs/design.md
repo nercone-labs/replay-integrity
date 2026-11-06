@@ -53,6 +53,102 @@ key that is not in the current keybox, and deletes them; the daemon regenerates 
 current keybox the next time each app asks. This runs at every boot (through the root manager's
 boot scripts) and on a schedule, so the verdict does not drift.
 
+## Keyboxes as mirrors serve them
+
+Replay Integrity and AlwaysStrong download the keybox from the same mirror, yet AlwaysStrong kept
+STRONG while Replay Integrity fell to below BASIC with a keybox Google had revoked. The defects
+below were found by comparing the two and are fixed whatever the rest of the explanation is.
+
+What was not established is how AlwaysStrong's own setup reads the mirror's latest file: by the
+source of `KXmlParser`, TEESimulator-RS reads no key from it either (see below). Whether the
+mirror serves other clients other bytes was not tested. The engine does not depend on the
+answer: it installs a well-formed keybox of checked keys whatever the mirror serves.
+
+### What the mirror serves
+
+The mirror serves an ECDSA-only keybox with a short-lived chain (leaf, `Droid CA3`, `Droid CA2`,
+the 2025 root `Key Attestation CA1`), replaced every few days. Its markup is broken on purpose or
+by accident: the latest one had `<Keybox DeviceID="t.me/... @evokerr>` without the closing
+quote, and an earlier one added a watermark `<Key algorithm="@evokerr">`. HTTP and HTTPS return
+the same bytes.
+
+The unclosed quote puts the following `<Key algorithm="ecdsa">` tag inside the attribute value.
+No conforming XML parser reads a key from that document:
+
+- the engine's `quick-xml` stops with "attribute value not closed";
+- TEESimulator-RS (`KeyBoxManager.parseKeysFromXml`) uses Android's `XmlPullParser`
+  (`KXmlParser`) in its default, non-relaxed mode, which throws at the `<` inside the attribute
+  value (`checkRelaxed("Illegal: \"<\" inside attribute value")`). `parseKeyStoreFile` catches
+  the exception and returns no keys, so the daemon then has no keybox at all.
+
+### What went wrong in Replay Integrity
+
+1. **A download that does not parse kept the old keybox.** `install-keybox` rejected the
+   document, the refresh logged a problem, and the keybox installed earlier stayed. Once that
+   keybox was revoked, the device kept attesting with a revoked chain, and the per-application
+   keys made with it (see cause 4) kept failing too.
+2. **STRONG was judged to need an RSA key.** `is_strong_capable` asked for a usable EC key and
+   a usable RSA key. The mirror's keyboxes are EC only, so even a parsed one would have been
+   reported as weak, and the repair would have tried to replace a working keybox. Play Integrity
+   attests with EC, and TEESimulator-RS signs a request for an RSA key with the EC key when the
+   keybox has none (`KeyBoxManager.getAnyAttestationKey`). An RSA key is now optional and still
+   reported.
+3. **The Play stack used the mode of every other target.** With `Auto`, TEESimulator-RS patches
+   the certificates of the device's own keystore when that keystore works. AlwaysStrong forces
+   generate mode (`!`) for Play services, its framework and the Play Store, and TEESimulator-RS's
+   own README shows `com.google.android.gms!`. The Play stack now has a mode of its own
+   (`Settings::play_target_mode`), `Generate` by default; older saved settings, which lack the
+   field, read as `Generate` too.
+
+### What the engine does now
+
+- **Recover, then write a well-formed keybox.** `KeyboxDocument::read` parses strictly and, when
+  that fails, recovers the keys (`KeyboxDocument::recover`): each `<Key` start tag begins a
+  region, and a region with exactly one PEM private key and at least one PEM certificate is a
+  key, its algorithm taken from the private key itself. The markup is never trusted, so broken
+  attributes, a missing end tag or a watermark element can neither hide a key nor add one: every
+  key is a parsed private key with parsed certificates. The parse error is kept as `defect`.
+- **Install the checked keys, not the downloaded text.** `install-keybox` writes
+  `KeyboxDocument::render` of the keys, which every XML parser reads, and only the usable keys
+  when there are any (`KeyboxVerdict::keys_to_write`), so the daemon cannot prefer a revoked RSA
+  key to a usable EC key. The daemon reads exactly what was checked.
+- **Never downgrade on an automatic refresh.** With `--no-downgrade` (`KeyboxPolicy::NoDowngrade`)
+  a keybox is installed only when it ranks at least as high as the installed one
+  (`KeyboxVerdict::rank`: a usable EC key, then the number of usable keys). An installed file
+  with a `defect` ranks lowest, because the daemon reads nothing from it. A keybox that ranks the
+  same replaces the installed one, because a mirror rotates its keybox before a leak is listed,
+  and expiry is not part of the rank for the same reason. A keybox the user imports is installed
+  without this check: it is the user's decision.
+- **Repair an installed keybox the daemon cannot read.** `apply` (at every boot, repair and
+  refresh) writes the installed keybox again when it has a `defect`, for example one that another
+  tool copied there. Every key is kept; no key is judged without the status list.
+- **Several sources.** The application tries the keybox URL and then the further URLs of the
+  settings in order, until the engine installs one or finds it is the installed one. A failure or
+  a declined keybox is a refresh problem only when no source succeeds.
+
+### Alternatives that were set aside
+
+- **Asking the mirror differently** (another User-Agent, plain HTTP) was not pursued: the bytes
+  were the same for every request tried, and making the application pass for another client to
+  a server is not a fix this application should depend on.
+- **Patching each defect** (accepting an unclosed quote, then the next trick) would repeat the
+  watermark fix forever. Recovering from PEM blocks covers every defect of the markup at once.
+- **Installing the downloaded bytes when they parse, and rendering only otherwise** would leave
+  the daemon reading something other than what was checked whenever the two XML parsers
+  disagree, and would keep revoked keys next to usable ones.
+- **Relaxing the strict parser** would make `parse` accept documents that are not keyboxes.
+  `parse` stays strict, because it states what a well-formed keybox is, and `recover` is a
+  separate, smaller reader.
+- **Ranking by expiry** would keep an old keybox over a mirror's replacement until the old one
+  stopped working, which for a leaked keybox is the moment of revocation.
+
+### The private key is kept in memory
+
+Rendering needs the private key, so `KeyboxKey` keeps its PEM block (`private_key_block`), where
+it used to keep only public information. Its `Debug` form leaves the block out, so a log line or
+a panic message never carries the secret. The engine is a short-lived process, and the block is
+written only to `keybox.xml` (mode 0600) and the store's copy of the previous keybox.
+
 ## Why an app, and why this split
 
 AlwaysStrong is a Magisk module with a WebUI and a pile of shell scripts. Replay Integrity is an
@@ -239,6 +335,13 @@ Four pieces were taken over, each reshaped to fit the engine:
   (`FileObserver` on `CLOSE_WRITE` and `MOVED_TO`). `target.txt`, `security_patch.txt`,
   `custom.pif.prop`, the boot scripts and the engine copy are now written only when their contents
   differ (`Files::write_if_changed`). The keybox was already written only on a change.
+
+Then, when AlwaysStrong kept STRONG with a keybox that Replay Integrity rejected, three more were
+taken over or bettered (see *Keyboxes as mirrors serve them*): generate mode for the Play stack,
+EC-only keyboxes counting as STRONG-capable, and accepting the mirror's broken markup. On that last
+point the engine goes further than AlwaysStrong, which copies the mirror's bytes as they are and
+checks only that they contain the word `Keybox`: the engine writes a well-formed keybox of checked
+keys, never replaces a working keybox with a worse one, and falls back to further sources.
 
 The rest was left out on purpose:
 

@@ -45,7 +45,7 @@ mod watcher;
 
 pub use components::{Component, ComponentState, Conflicts, Flavor};
 pub use config::{KeystoreConfig, Settings};
-pub use engine::{ApplyMode, ApplyReport, BootReport, Engine, InstallReport, REFRESH_PROCESSES, StatusReport};
+pub use engine::{ApplyMode, ApplyReport, BootReport, Engine, InstallReport, KeyboxPolicy, REFRESH_PROCESSES, StatusReport};
 pub use error::ReplayError;
 pub use files::Files;
 pub use fingerprint::{Fingerprint, FingerprintProblem, FingerprintReport, SpoofFlag, SpoofFlags};
