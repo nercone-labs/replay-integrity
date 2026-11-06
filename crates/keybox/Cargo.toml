@@ -1,0 +1,10 @@
+[package]
+name = "keybox"
+description = "The Android attestation keybox XML format: attestation keys and their certificate chains"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+x509.workspace = true
+quick-xml.workspace = true

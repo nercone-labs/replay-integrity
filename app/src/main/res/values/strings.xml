@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Replay Integrity</string>
+    <string name="notification_channel">Status</string>
+
+    <string name="tab_home">Home</string>
+    <string name="tab_settings">Settings</string>
+
+    <string name="verdict_strong">Ready for STRONG</string>
+    <string name="verdict_not_ready">Not ready</string>
+    <string name="verdict_checking">Checking…</string>
+    <string name="verdict_strong_detail">The keybox, the fingerprint and both modules are in place.</string>
+    <string name="verdict_not_ready_detail">Something below needs attention before Play Integrity can reach STRONG.</string>
+
+    <string name="action_refresh">Refresh now</string>
+    <string name="action_repair">Repair</string>
+    <string name="action_retry">Try again</string>
+
+    <string name="section_components">Modules</string>
+    <string name="section_keybox">Keybox</string>
+    <string name="section_fingerprint">Fingerprint</string>
+    <string name="section_system">System</string>
+
+    <string name="component_keystore">Key attestation (TEESimulator-RS)</string>
+    <string name="component_integrity">Build spoof (PlayIntegrity Fork)</string>
+    <string name="component_installed">Installed, version %1$s</string>
+    <string name="component_update_pending">Update pending — reboot to apply</string>
+    <string name="component_disabled">Installed but disabled</string>
+    <string name="component_other">Another module uses this slot (%1$s)</string>
+    <string name="component_missing">Not installed</string>
+
+    <string name="keybox_usable">%1$d of %2$d keys usable now</string>
+    <string name="keybox_none">No keybox installed</string>
+    <string name="keybox_expires">Keys valid until %1$s</string>
+    <string name="keybox_revocation_unchecked">Revocation not checked (status list unavailable)</string>
+    <string name="keybox_problem">%1$s: %2$s</string>
+
+    <string name="fingerprint_model">%1$s (%2$s)</string>
+    <string name="fingerprint_patch">Security patch %1$s</string>
+    <string name="fingerprint_none">No fingerprint installed</string>
+    <string name="fingerprint_expires">Build accepted until %1$s</string>
+    <string name="fingerprint_problem">Problem: %1$s</string>
+
+    <string name="system_root">Root manager: %1$s</string>
+    <string name="system_root_none">No supported root manager</string>
+    <string name="system_zygisk_ok">Zygisk present</string>
+    <string name="system_zygisk_missing">No Zygisk — the build spoof will not load</string>
+    <string name="system_daemon_running">Keystore daemon running</string>
+    <string name="system_daemon_stopped">Keystore daemon not running</string>
+    <string name="system_stale_keys">%1$d stale per-app key(s) — Repair removes them</string>
+    <string name="system_conflict">Conflicting module: %1$s</string>
+    <string name="system_boot_hook_on">Runs at every boot</string>
+    <string name="system_boot_hook_off">Does not run at boot</string>
+    <string name="system_last_repair">Last repaired %1$s</string>
+
+    <string name="setting_privilege">Privilege</string>
+    <string name="setting_privilege_automatic">Automatic</string>
+    <string name="setting_privilege_shizuku">Shizuku / Sui</string>
+    <string name="setting_privilege_root">Root (su)</string>
+    <string name="setting_auto_keybox">Refresh the keybox automatically</string>
+    <string name="setting_auto_keybox_detail">Fetch a working keybox and replace it before it is revoked or expires.</string>
+    <string name="setting_auto_fingerprint">Refresh the fingerprint automatically</string>
+    <string name="setting_auto_fingerprint_detail">Fetch a fresh Pixel fingerprint before its build stops being accepted.</string>
+    <string name="setting_boot_hook">Repair at every boot</string>
+    <string name="setting_boot_hook_detail">Install a boot script so the keystore is repaired before the framework starts.</string>
+    <string name="setting_about">Replay Integrity drives TEESimulator-RS and PlayIntegrity Fork, keeping the keybox, the fingerprint and the keystore valid so the verdict does not decay.</string>
+
+    <string name="operation_checking">Checking status…</string>
+    <string name="operation_refreshing">Refreshing…</string>
+    <string name="operation_repairing">Repairing…</string>
+    <string name="operation_restarting">Restarting the keystore…</string>
+
+    <string name="boot_failed">Replay Integrity could not repair after boot: %1$s</string>
+    <string name="error_generic">%1$s</string>
+    <string name="dismiss">Dismiss</string>
+</resources>

@@ -1,0 +1,35 @@
+[versions]
+agp = "9.4.1"
+kotlin = "2.4.21"
+compose-bom = "2026.09.00"
+# Material 3 Expressive components (ButtonGroup, LoadingIndicator, SegmentedListItem, ...) are newer than the BOM.
+material3 = "1.5.0-beta01"
+activity = "1.13.0"
+lifecycle = "2.11.0"
+core = "1.19.1"
+work = "2.12.0"
+serialization = "1.11.0"
+shizuku = "13.1.5"
+icons = "1.7.8"
+junit = "4.13.2"
+
+[libraries]
+androidx-core = { module = "androidx.core:core-ktx", version.ref = "core" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-work = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-material3 = { module = "androidx.compose.material3:material3", version.ref = "material3" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-material-icons = { module = "androidx.compose.material:material-icons-extended", version.ref = "icons" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
+shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NDK_VERSION: 30.0.16248370
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Write the version of the tag into the sources
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "::error::$GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"; exit 1; }
+          code=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+          sed -i "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"$version\"/" Cargo.toml
+          sed -i "s/^\( *\)versionName = \".*\"/\1versionName = \"$version\"/; s/^\( *\)versionCode = .*/\1versionCode = $code/" app/build.gradle.kts
+          cargo update --workspace
+      - name: Commit the version and move the tag onto it
+        id: commit
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "Release $GITHUB_REF_NAME"
+            git push origin HEAD:main
+            git tag -f "$GITHUB_REF_NAME"
+            git push --force origin "refs/tags/$GITHUB_REF_NAME"
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+
+  release:
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools ndk;${{ env.NDK_VERSION }}
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --stacktrace
+
+      - name: Sign the APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ vars.SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          name="replay-integrity-${GITHUB_REF_NAME}"
+          unsigned="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            cp "$unsigned" "$name.apk"
+          else
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)"
+            "$apksigner" sign \
+              --ks "$RUNNER_TEMP/release.jks" \
+              --ks-pass env:KEYSTORE_PASSWORD \
+              --ks-key-alias "$KEY_ALIAS" \
+              --key-pass env:KEY_PASSWORD \
+              --out "$name.apk" "$unsigned"
+            "$apksigner" verify "$name.apk"
+            rm "$RUNNER_TEMP/release.jks"
+          fi
+          sha256sum replay-integrity-*.apk > SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" replay-integrity-*.apk SHA256SUMS --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" replay-integrity-*.apk SHA256SUMS \
+              --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          fi

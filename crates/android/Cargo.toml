@@ -1,0 +1,9 @@
+[package]
+name = "android"
+description = "Android system interfaces: system properties, the package manager and the package list, processes and their capabilities"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustix.workspace = true

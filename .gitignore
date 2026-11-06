@@ -1,0 +1,12 @@
+# Build outputs
+/target/
+/build/
+/app/build/
+/.gradle/
+/.kotlin/
+local.properties
+
+# IDE
+/.idea/
+*.iml
+.DS_Store

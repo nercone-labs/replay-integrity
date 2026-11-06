@@ -1,0 +1,12 @@
+[package]
+name = "attestation"
+description = "Android key attestation: the attestation extension, the trust anchors of Google, the certificate status list, and checks of certificate chains"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+der.workspace = true
+x509.workspace = true
+serde.workspace = true
+serde_json.workspace = true

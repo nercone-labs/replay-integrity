@@ -1,0 +1,10 @@
+[package]
+name = "x509"
+description = "X.509 certificates (RFC 5280), their public keys, and PEM text encoding (RFC 7468)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+der.workspace = true
+base64.workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "replay"
+description = "Replay Integrity engine: keeps the keybox, the fingerprint and the configuration of TEESimulator-RS and PlayIntegrityFork valid"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "replay"
+path = "src/main.rs"
+
+[dependencies]
+der.workspace = true
+x509.workspace = true
+attestation.workspace = true
+keybox.workspace = true
+prop.workspace = true
+android.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+lexopt.workspace = true

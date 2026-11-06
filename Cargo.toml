@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/der", "crates/x509", "crates/attestation", "crates/keybox", "crates/prop", "crates/android", "crates/replay"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Nercone <nercone@nercone.dev>"]
+repository = "https://github.com/nercone-labs/replay-integrity"
+
+[workspace.dependencies]
+der = { path = "crates/der" }
+x509 = { path = "crates/x509" }
+attestation = { path = "crates/attestation" }
+keybox = { path = "crates/keybox" }
+prop = { path = "crates/prop" }
+android = { path = "crates/android" }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+quick-xml = "0.42"
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process", "thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+lexopt = "0.3"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
