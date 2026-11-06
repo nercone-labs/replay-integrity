@@ -8,35 +8,45 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 
 /** A failed engine command, with the engine log of the attempt. */
-class EngineException(val kind: String, message: String, val log: List<LogLine>) : Exception(message)
+class EngineException(val kind: String, message: String, val log: List<LogLine>) : Exception(message) {
+    companion object {
+        /** The engine runs as root, but the root manager removed the capabilities it needs. */
+        const val RESTRICTED = "restricted"
+        const val TIMEOUT = "timeout"
+        const val OUTPUT = "output"
+    }
+}
 
 /** The successful result of an engine command, with the engine log. */
 data class EngineResult<T>(val value: T, val log: List<LogLine>)
 
 /**
  * The Rust engine (`replay`), packaged as `libreplay.so` in the native library directory.
- * Commands that read or change the system run as root through a [Privilege]; checking a
+ * Commands that read or change the system run as root through a `Privilege`; checking a
  * downloaded keybox or fingerprint runs as the application itself.
  *
  * The application downloads the keybox, the fingerprint and the certificate status list with
  * ordinary TLS and passes their paths to the engine; the engine performs no network access.
  */
-class Engine(context: Context) {
+class Engine(val context: Context) {
     val executable: String = File(context.applicationInfo.nativeLibraryDir, EXECUTABLE).absolutePath
-    val filesDir: File = context.filesDir
-    val cacheDir: File = context.cacheDir
-    val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    val json = EngineJson.json
+
+    /** The directory of the files handed to the engine. */
+    val directory: File get() = File(context.cacheDir, DIRECTORY).apply { mkdirs() }
 
     fun decode(output: String): EngineResponse {
         val line = output.lineSequence().lastOrNull { it.startsWith("{") }
-            ?: throw EngineException("output", "the engine printed no result: ${output.take(500)}", emptyList())
+            ?: throw EngineException(EngineException.OUTPUT, "the engine printed no result: ${output.take(500)}", emptyList())
         return try {
             json.decodeFromString(EngineResponse.serializer(), line)
         } catch (error: SerializationException) {
-            throw EngineException("output", "the engine printed an invalid result: ${error.message}", emptyList())
+            throw EngineException(EngineException.OUTPUT, "the engine printed an invalid result: ${error.message}", emptyList())
+        } catch (error: IllegalArgumentException) {
+            throw EngineException(EngineException.OUTPUT, "the engine printed an invalid result: ${error.message}", emptyList())
         }
     }
 
@@ -45,25 +55,39 @@ class Engine(context: Context) {
         if (!response.ok || error != null) {
             throw EngineException(error?.kind ?: "unknown", error?.message ?: "the engine failed", response.log)
         }
-        val value = response.result ?: throw EngineException("output", "the engine returned no result", response.log)
-        return EngineResult(json.decodeFromJsonElement(serializer, value), response.log)
+        val value = response.result ?: throw EngineException(EngineException.OUTPUT, "the engine returned no result", response.log)
+        return try {
+            EngineResult(json.decodeFromJsonElement(serializer, value), response.log)
+        } catch (error: SerializationException) {
+            throw EngineException(EngineException.OUTPUT, "the engine returned an unexpected result: ${error.message}", response.log)
+        } catch (error: IllegalArgumentException) {
+            throw EngineException(EngineException.OUTPUT, "the engine returned an unexpected result: ${error.message}", response.log)
+        }
     }
 
-    /** Runs the engine as the application (no privilege), for checking downloaded files. */
+    /** Runs the engine as the application, for checking files. */
     suspend fun <T> run(arguments: List<String>, serializer: KSerializer<T>, timeoutMillis: Long = TIMEOUT_MILLIS): EngineResult<T> =
         withContext(Dispatchers.IO) {
             val output = ProcessRunner.run(listOf(executable) + arguments, timeoutMillis)
-            result(decode(output.stdout + "\n" + output.stderr), serializer)
+            if (output.exitCode == ProcessRunner.TIMEOUT_EXIT_CODE && output.stdout.isBlank()) {
+                throw EngineException(EngineException.TIMEOUT, "the engine did not finish in time", emptyList())
+            }
+            result(decode(output.stdout), serializer)
         }
 
-    /** Runs the engine as root through [privilege]. */
+    /** Runs the engine through `privilege`. */
     suspend fun <T> run(privilege: Privilege, arguments: List<String>, serializer: KSerializer<T>, timeoutMillis: Long = TIMEOUT_MILLIS): EngineResult<T> {
         val output = privilege.execute(listOf(executable) + arguments, timeoutMillis)
+        if (output.exitCode == ProcessRunner.START_FAILURE_EXIT_CODE && output.stdout.isBlank()) {
+            throw EngineException(EngineException.OUTPUT, "the engine could not be started: ${output.stderr.take(500)}", emptyList())
+        }
         if (output.exitCode == ProcessRunner.TIMEOUT_EXIT_CODE && output.stdout.isBlank()) {
-            throw EngineException("timeout", "the engine did not finish in time: ${output.stderr.take(500)}", emptyList())
+            throw EngineException(EngineException.TIMEOUT, "the engine did not finish in time: ${output.stderr.take(500)}", emptyList())
         }
         return result(decode(output.stdout), serializer)
     }
+
+    suspend fun version(): EngineResult<VersionReport> = run(listOf("version"), VersionReport.serializer())
 
     suspend fun status(privilege: Privilege, statusList: File?): EngineResult<StatusReport> =
         run(privilege, listOf("status") + statusArguments(statusList), StatusReport.serializer())
@@ -75,51 +99,58 @@ class Engine(context: Context) {
         run(listOf("inspect-fingerprint", file.absolutePath), FingerprintReport.serializer())
 
     suspend fun installKeybox(privilege: Privilege, file: File, source: String?, statusList: File?): EngineResult<InstallReport> =
-        run(privilege, listOf("install-keybox", file.absolutePath) + source(source) + statusArguments(statusList), InstallReport.serializer(), LONG_TIMEOUT_MILLIS)
+        run(privilege, listOf("install-keybox", file.absolutePath) + sourceArguments(source) + statusArguments(statusList), InstallReport.serializer())
 
-    suspend fun installFingerprint(privilege: Privilege, file: File, source: String?, settings: File?): EngineResult<InstallReport> =
-        run(privilege, listOf("install-fingerprint", file.absolutePath) + source(source) + settingsArguments(settings), InstallReport.serializer())
+    suspend fun installFingerprint(privilege: Privilege, file: File, source: String?, settings: EngineSettings): EngineResult<InstallReport> =
+        run(privilege, listOf("install-fingerprint", file.absolutePath) + sourceArguments(source) + settingsArguments(settings), InstallReport.serializer())
 
-    suspend fun apply(privilege: Privilege, settings: File?, restart: Boolean): EngineResult<ApplyReport> =
-        run(privilege, listOf("apply") + (if (restart) emptyList() else listOf("--no-restart")) + settingsArguments(settings), ApplyReport.serializer(), LONG_TIMEOUT_MILLIS)
+    suspend fun apply(privilege: Privilege, settings: EngineSettings, restart: Boolean): EngineResult<ApplyReport> {
+        val arguments = listOf("apply") + (if (restart) emptyList() else listOf("--no-restart")) + settingsArguments(settings)
+        return run(privilege, arguments, ApplyReport.serializer(), LONG_TIMEOUT_MILLIS)
+    }
 
     suspend fun restart(privilege: Privilege): EngineResult<RestartReport> =
         run(privilege, listOf("restart"), RestartReport.serializer(), LONG_TIMEOUT_MILLIS)
 
+    suspend fun staleKeys(privilege: Privilege): EngineResult<List<PersistedKey>> =
+        run(privilege, listOf("stale-keys"), ListSerializer(PersistedKey.serializer()))
+
     suspend fun installModule(privilege: Privilege, component: Component, zip: File): EngineResult<ModuleOutput> =
-        run(privilege, listOf("install-module", if (component == Component.KEYSTORE) "keystore" else "integrity", zip.absolutePath), ModuleOutput.serializer(), LONG_TIMEOUT_MILLIS)
+        run(privilege, listOf("install-module", component.argument, zip.absolutePath), ModuleOutput.serializer(), LONG_TIMEOUT_MILLIS)
 
+    /** Installs the boot scripts, with a copy of the engine that survives updates of the application. */
     suspend fun installHook(privilege: Privilege): EngineResult<BootHook> =
-        run(privilege, listOf("hook", "install", "--executable", executable), BootHook.serializer())
+        run(privilege, listOf("hook", "install", "--package", context.packageName), BootHook.serializer())
 
-    suspend fun removeHook(privilege: Privilege): EngineResult<BootHook> =
-        run(privilege, listOf("hook", "remove"), BootHook.serializer())
+    suspend fun removeHook(privilege: Privilege): EngineResult<BootHook> = run(privilege, listOf("hook", "remove"), BootHook.serializer())
 
     fun statusArguments(statusList: File?): List<String> = statusList?.let { listOf("--status", it.absolutePath) } ?: emptyList()
 
-    fun settingsArguments(settings: File?): List<String> = settings?.let { listOf("--settings", it.absolutePath) } ?: emptyList()
+    fun sourceArguments(source: String?): List<String> = source?.let { listOf("--source", it) } ?: emptyList()
 
-    fun source(source: String?): List<String> = source?.let { listOf("--source", it) } ?: emptyList()
+    /** Writes `settings` for the engine and returns `--settings` with its path. */
+    suspend fun settingsArguments(settings: EngineSettings): List<String> =
+        listOf("--settings", write(SETTINGS, json.encodeToString(EngineSettings.serializer(), settings).toByteArray()).absolutePath)
 
-    /** Writes [text] to a cache file, for passing a setting to the engine. */
-    suspend fun writeCache(name: String, text: String): File = withContext(Dispatchers.IO) {
-        File(cacheDir, name).apply { writeText(text) }
+    /** Writes `bytes` to a file named `name` that the engine can read, replacing it whole. */
+    suspend fun write(name: String, bytes: ByteArray): File = withContext(Dispatchers.IO) {
+        val file = File(directory, name)
+        val temporary = File(directory, "$name.tmp")
+        temporary.writeBytes(bytes)
+        if (!temporary.renameTo(file)) throw java.io.IOException("cannot write $file")
+        file
     }
 
     companion object {
         const val EXECUTABLE = "libreplay.so"
+        const val DIRECTORY = "engine"
+        const val SETTINGS = "settings.json"
         const val TIMEOUT_MILLIS = 60_000L
+
+        /** Applying restarts the keystore daemon and ends processes, and installing a module runs the root manager. */
         const val LONG_TIMEOUT_MILLIS = 5 * 60_000L
     }
 }
 
 @kotlinx.serialization.Serializable
-data class RestartReport(val restarted: Boolean = false)
-
-@kotlinx.serialization.Serializable
-data class ModuleOutput(val output: String = "")
-
-@kotlinx.serialization.Serializable
-data class BootHook(val managers: List<RootManager> = emptyList(), val scripts: List<String> = emptyList()) {
-    val installed: Boolean get() = scripts.isNotEmpty()
-}
+data class VersionReport(val version: String)

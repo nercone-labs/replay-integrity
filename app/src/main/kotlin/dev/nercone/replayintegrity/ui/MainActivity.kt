@@ -13,16 +13,22 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -32,7 +38,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ShortNavigationBar
 import androidx.compose.material3.ShortNavigationBarItem
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +55,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.nercone.replayintegrity.R
 
@@ -63,6 +73,8 @@ class MainActivity : ComponentActivity() {
 object ReplayApp {
     enum class Destination(val title: Int, val selectedIcon: ImageVector, val icon: ImageVector) {
         HOME(R.string.tab_home, Icons.Filled.Home, Icons.Outlined.Home),
+        ATTESTATION(R.string.tab_attestation, Icons.Filled.VerifiedUser, Icons.Outlined.VerifiedUser),
+        TARGETS(R.string.tab_targets, Icons.Filled.Apps, Icons.Outlined.Apps),
         SETTINGS(R.string.tab_settings, Icons.Filled.Settings, Icons.Outlined.Settings),
     }
 
@@ -72,13 +84,27 @@ object ReplayApp {
         val state by model.state.collectAsStateWithLifecycle()
         val settings by model.settings.collectAsStateWithLifecycle()
         var destination by rememberSaveable { mutableStateOf(Destination.HOME) }
-        val context = LocalContext.current
+        val snackbar = remember { SnackbarHostState() }
         val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+        val context = LocalContext.current
+        val outcome = state.outcome
 
-        // Once the configuration is applied, notifications matter: they report boot failures.
-        LaunchedEffect(settings.applied) {
-            if (settings.applied && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        // Notifications only matter once the configuration is applied: they report failures
+        // of the runs after a boot and of the scheduled refreshes.
+        LaunchedEffect(outcome) {
+            val applied = outcome is Outcome.Refreshed || outcome is Outcome.Repaired || outcome is Outcome.Installed
+            val asked = settings.notificationsAsked
+            if (applied && !asked && settings.notifyFailures && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                model.configure { it.copy(notificationsAsked = true) }
                 notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        // The home screen shows outcomes itself; elsewhere a failure appears as a snackbar.
+        val failure = (outcome as? Outcome.Failed)?.takeIf { !it.restricted && destination != Destination.HOME }
+        LaunchedEffect(failure) {
+            failure?.let {
+                snackbar.showSnackbar(it.text, withDismissAction = true)
+                model.dismissOutcome()
             }
         }
 
@@ -115,6 +141,7 @@ object ReplayApp {
                     }
                 }
             },
+            snackbarHost = { SnackbarHost(snackbar) },
         ) { padding ->
             AnimatedContent(
                 targetState = destination,
@@ -124,21 +151,46 @@ object ReplayApp {
             ) { shown ->
                 Box(Modifier.fillMaxSize()) {
                     when (shown) {
-                        Destination.HOME -> HomeScreen.Content(state, model)
-                        Destination.SETTINGS -> SettingsScreen.Content(settings, model)
+                        Destination.HOME -> HomeScreen.Content(state, settings, model) { destination = it }
+                        Destination.ATTESTATION -> AttestationScreen.Content(state, settings, model)
+                        Destination.TARGETS -> TargetsScreen.Content(state, settings, model)
+                        Destination.SETTINGS -> SettingsScreen.Content(state, settings, model)
                     }
                 }
             }
         }
+        (outcome as? Outcome.Failed)?.takeIf { it.restricted }?.let { Restricted(it, onRecheck = { model.dismissOutcome(); model.recheck() }, onDismiss = model::dismissOutcome) }
+    }
+
+    /** Explains that the root manager restricts root, and how to grant it fully. */
+    @Composable
+    fun Restricted(failure: Outcome.Failed, onRecheck: () -> Unit, onDismiss: () -> Unit) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text(stringResource(R.string.restricted_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.restricted_text))
+                    Text(failure.text, style = MaterialTheme.typography.bodySmall, color = Widgets.secondary)
+                }
+            },
+            confirmButton = { TextButton(onClick = onRecheck) { Text(stringResource(R.string.check_again)) } },
+            dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.dismiss)) } },
+        )
     }
 
     @Composable
     fun operationText(operation: Operation): String = stringResource(
         when (operation) {
+            Operation.PREPARING -> R.string.operation_preparing
             Operation.CHECKING -> R.string.operation_checking
             Operation.REFRESHING -> R.string.operation_refreshing
             Operation.REPAIRING -> R.string.operation_repairing
             Operation.RESTARTING -> R.string.operation_restarting
+            Operation.INSPECTING -> R.string.operation_inspecting
+            Operation.INSTALLING -> R.string.operation_installing
+            Operation.INSTALLING_MODULE -> R.string.operation_installing_module
+            Operation.CONFIGURING_BOOT -> R.string.operation_configuring_boot
         },
     )
 }

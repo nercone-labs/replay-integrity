@@ -2,7 +2,7 @@ use std::fmt;
 use std::io;
 use std::path::Path;
 
-use android::CommandError;
+use android::{Capability, CommandError};
 use attestation::AttestationError;
 use keybox::KeyboxError;
 
@@ -21,6 +21,8 @@ pub enum ReplayError {
     Command(CommandError),
     /// The engine refuses to act in the current situation.
     Refused(String),
+    /// The engine runs as root, but without these capabilities: the root manager restricts root.
+    Restricted(Vec<Capability>),
 }
 
 impl ReplayError {
@@ -45,6 +47,7 @@ impl ReplayError {
             ReplayError::IO { .. } => "io",
             ReplayError::Command(_) => "command",
             ReplayError::Refused(_) => "refused",
+            ReplayError::Restricted(_) => "restricted",
         }
     }
 }
@@ -58,6 +61,10 @@ impl fmt::Display for ReplayError {
             ReplayError::IO { context, source } => write!(formatter, "cannot {context}: {source}"),
             ReplayError::Command(error) => write!(formatter, "{error}"),
             ReplayError::Refused(reason) => formatter.write_str(reason),
+            ReplayError::Restricted(missing) => {
+                let names: Vec<String> = missing.iter().map(Capability::to_string).collect();
+                write!(formatter, "the engine runs as root, but without {}: the root manager restricts root for this application", names.join(", "))
+            }
         }
     }
 }

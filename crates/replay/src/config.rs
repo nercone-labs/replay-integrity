@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Component, Fingerprint, Layout, PatchDate, SpoofFlags};
+use crate::{Component, Layout, PatchDate, ReplayError, SpoofFlag, SpoofFlags, Target, TargetMode};
 
 /// The files of TEESimulator-RS and PlayIntegrityFork that the engine writes, under
 /// `/data/adb/tricky_store` and in the module directories.
@@ -60,43 +60,56 @@ impl KeystoreConfig {
     }
 }
 
-/// The settings the engine keeps for itself, written by the application through the engine.
+/// The settings of the engine: what the user chose for the attestation targets and the spoof
+/// flags. The application passes them with `--settings`, and `apply` saves a copy in the store,
+/// so that the boot hook, which runs without the application, applies the same choices.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    /// Whether the keybox is refreshed automatically; off when the user keeps their own.
-    pub auto_keybox: bool,
-    /// Whether the fingerprint is refreshed automatically; off when the user keeps their own.
-    pub auto_fingerprint: bool,
-    /// Extra packages the user added to the attestation targets.
+    /// Packages added to the attestation targets.
     pub extra_packages: Vec<String>,
+    /// Installed packages left out of the attestation targets. The Play stack
+    /// (`TargetList::ALWAYS`) cannot be left out.
+    pub excluded_packages: Vec<String>,
+    /// How TEESimulator-RS handles the keys of every target.
+    pub target_mode: TargetMode,
     /// Overrides of the spoof flags, by their key.
     pub spoof_overrides: Vec<(String, bool)>,
-    /// Whether the boot hook is installed.
-    pub boot_hook: bool,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { auto_keybox: true, auto_fingerprint: true, extra_packages: Vec::new(), spoof_overrides: Vec::new(), boot_hook: true }
+        Settings { extra_packages: Vec::new(), excluded_packages: Vec::new(), target_mode: TargetMode::Auto, spoof_overrides: Vec::new() }
     }
 }
 
 impl Settings {
+    /// Parses settings and checks them: every package must be a package name, so that nothing
+    /// else can reach `target.txt`, and every override must name a known spoof flag.
+    pub fn parse(bytes: &[u8]) -> Result<Settings, ReplayError> {
+        let settings: Settings = serde_json::from_slice(bytes).map_err(|error| ReplayError::Rejected(vec![format!("invalid settings: {error}")]))?;
+        let problems = settings.problems();
+        if problems.is_empty() { Ok(settings) } else { Err(ReplayError::Rejected(problems)) }
+    }
+
+    /// Every reason why the settings are not acceptable.
+    pub fn problems(&self) -> Vec<String> {
+        let packages = self.extra_packages.iter().chain(&self.excluded_packages);
+        let mut problems: Vec<String> =
+            packages.filter(|package| !Target::is_package_name(package)).map(|package| format!("\"{package}\" is not a package name")).collect();
+        problems
+            .extend(self.spoof_overrides.iter().filter(|(key, _)| SpoofFlag::from_key(key).is_none()).map(|(key, _)| format!("\"{key}\" is not a spoof flag")));
+        problems
+    }
+
     /// The spoof flags: the recommended values for `sdk`, with the user's overrides applied.
     pub fn spoof_flags(&self, sdk: Option<u32>) -> SpoofFlags {
         let mut flags = SpoofFlags::recommended(sdk);
         for (key, value) in &self.spoof_overrides {
-            if let Some(flag) = crate::SpoofFlag::from_key(key) {
+            if let Some(flag) = SpoofFlag::from_key(key) {
                 flags.set(flag, *value);
             }
         }
         flags
     }
-}
-
-/// Applies the spoof flags and the security patch of `fingerprint` and returns the file to
-/// write for PlayIntegrityFork.
-pub fn fingerprint_for_integrity(fingerprint: &Fingerprint, spoof: &SpoofFlags) -> Fingerprint {
-    fingerprint.with_settings(spoof)
 }

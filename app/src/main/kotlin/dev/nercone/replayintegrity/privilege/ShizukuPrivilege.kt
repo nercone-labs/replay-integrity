@@ -34,7 +34,17 @@ class ShizukuPrivilege(val context: Context) : Privilege {
         .processNameSuffix(PROCESS_SUFFIX)
         .version(SERVICE_VERSION)
 
-    override suspend fun status(): PrivilegeStatus {
+    /**
+     * Shizuku can stop between two of its calls, and its calls then throw; a status read while
+     * it stops is that it does not run.
+     */
+    override suspend fun status(): PrivilegeStatus = try {
+        read()
+    } catch (_: RuntimeException) {
+        PrivilegeStatus.Unavailable(if (isInstalled()) PrivilegeStatus.Reason.NOT_RUNNING else PrivilegeStatus.Reason.NOT_INSTALLED)
+    }
+
+    fun read(): PrivilegeStatus {
         if (!Shizuku.pingBinder()) {
             return PrivilegeStatus.Unavailable(if (isInstalled()) PrivilegeStatus.Reason.NOT_RUNNING else PrivilegeStatus.Reason.NOT_INSTALLED)
         }
@@ -62,7 +72,7 @@ class ShizukuPrivilege(val context: Context) : Privilege {
      * answer is awaited until Shizuku stops, or for `PERMISSION_TIMEOUT_MILLIS` at most.
      */
     override suspend fun requestPermission(): PrivilegeStatus {
-        if (!Shizuku.pingBinder()) return status()
+        if (status() != PrivilegeStatus.PermissionRequired) return status()
         val answered = CompletableDeferred<Unit>()
         val answer = Shizuku.OnRequestPermissionResultListener { requestCode, _ -> if (requestCode == REQUEST_CODE) answered.complete(Unit) }
         val dead = Shizuku.OnBinderDeadListener { answered.complete(Unit) }
@@ -129,7 +139,11 @@ class ShizukuPrivilege(val context: Context) : Privilege {
                         service = null
                     }
                 }
-                Shizuku.bindUserService(arguments, connection)
+                try {
+                    Shizuku.bindUserService(arguments, connection)
+                } catch (error: RuntimeException) {
+                    if (continuation.isActive) continuation.resumeWith(Result.failure(PrivilegeException("Shizuku stopped", error)))
+                }
             }
         } ?: throw PrivilegeException("the Shizuku service did not start")
         service = connected

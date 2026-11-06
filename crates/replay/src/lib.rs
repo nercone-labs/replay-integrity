@@ -15,7 +15,7 @@
 //! spoof flags are reset by the modules' own refresh scripts, and — the subtlest — TEESimulator
 //! keeps per-application keys it generated with an older keybox, so those applications keep
 //! receiving a chain built from a keybox that is no longer valid. `Engine::apply` re-applies the
-//! configuration and removes those stale keys; run at boot (through the boot hook) and
+//! configuration and removes those stale keys; run at boot (through the boot hook, `Engine::boot`) and
 //! periodically (by the application), it is what keeps the verdict from decaying.
 //!
 //! The network is left to the application, which has ordinary TLS: it downloads the keybox, the
@@ -42,7 +42,7 @@ mod verify;
 
 pub use components::{Component, ComponentState, Conflicts, Flavor};
 pub use config::{KeystoreConfig, Settings};
-pub use engine::{ApplyReport, Engine, InstallReport, REFRESH_PROCESSES, StatusReport};
+pub use engine::{ApplyMode, ApplyReport, BootReport, Engine, InstallReport, REFRESH_PROCESSES, StatusReport};
 pub use error::ReplayError;
 pub use files::Files;
 pub use fingerprint::{Fingerprint, FingerprintProblem, FingerprintReport, SpoofFlag, SpoofFlags};

@@ -16,7 +16,7 @@ class CommandService : ICommandService.Stub() {
         val result = try {
             ProcessRunner.run(command.toList(), timeoutMillis)
         } catch (error: Exception) {
-            CommandResult(ProcessRunner.TIMEOUT_EXIT_CODE, "", error.toString())
+            CommandResult(ProcessRunner.START_FAILURE_EXIT_CODE, "", error.toString())
         }
         return Bundle().apply {
             putInt(EXIT_CODE, result.exitCode)

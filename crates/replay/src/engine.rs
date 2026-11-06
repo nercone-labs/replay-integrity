@@ -1,28 +1,55 @@
-use android::{ActivityManager, PackageManager};
+use android::{ActivityManager, Capability, PackageList, PackageManager, ProcessCapabilities};
 use der::Time;
 use keybox::KeyboxDocument;
 use serde::Serialize;
 
 use crate::{
-    BootHook, Component, ComponentState, Conflicts, Files, Fingerprint, FingerprintReport, KeystoreConfig, KeystoreDaemon, Layout, Log, Module, PatchDate,
-    PersistedKey, ReplayError, RootManager, Settings, Store, TargetList, Verifier, Zygisk, config, store::InstalledFile, store::State, verify::KeyboxVerdict,
+    BootHook, Component, ComponentState, Conflicts, DaemonState, Files, Fingerprint, FingerprintReport, KeystoreConfig, KeystoreDaemon, Layout, Log, Module,
+    PatchDate, PersistedKey, ReplayError, RootManager, Settings, Store, TargetList, Verifier, Zygisk, store::InstalledFile, store::State,
+    verify::KeyboxVerdict,
 };
 
 /// The packages whose Play Integrity state must be refreshed for a new keybox or fingerprint to
 /// take effect: the DroidGuard process of Play services and the Play Store.
 pub const REFRESH_PROCESSES: [&str; 2] = ["com.google.android.gms.unstable", "com.android.vending"];
 
-/// What an `apply` or `repair` did.
+/// How `apply` runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplyMode {
+    /// Rebuild the target list, re-apply the configuration, then restart the keystore daemon
+    /// and end the Play processes so that the change takes effect at once.
+    Restart,
+    /// Like `Restart`, without restarting anything: the change takes effect when the daemon
+    /// and the Play processes next start.
+    NoRestart,
+    /// At boot, before the framework starts: the package manager does not run yet, so the
+    /// target list is kept as it is, and nothing is restarted, because nothing runs yet.
+    EarlyBoot,
+}
+
+/// What an `apply` did.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplyReport {
+    /// The number of packages in `target.txt` afterwards.
     pub targets: usize,
+    /// Whether `target.txt` was rebuilt; it is kept when the package manager cannot list packages.
+    pub targets_rebuilt: bool,
     pub security_patch: Option<String>,
     pub spoof: Vec<(String, bool)>,
     /// The persisted keys removed because their chains were signed by a key no longer present.
     pub stale_keys_removed: usize,
     pub daemon_restarted: bool,
-    pub refreshed: bool,
+}
+
+/// What a `boot` did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum BootReport {
+    /// The configuration was applied.
+    Applied { report: ApplyReport },
+    /// The application is uninstalled: the boot hook removed itself and nothing was applied.
+    Uninstalled,
 }
 
 /// The result of installing a keybox or fingerprint.
@@ -40,18 +67,42 @@ pub struct InstallReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusReport {
-    pub root_manager: Option<RootManager>,
+    pub engine_version: String,
+    /// The API level the device launched with: Google cross-checks it against the spoofed
+    /// build, so it decides whether a spoofed Pixel identity can reach STRONG.
+    pub first_api_level: Option<u32>,
+    /// Every installed root manager; leftovers of an earlier one may make several appear.
+    pub root_managers: Vec<RootManager>,
     pub zygisk: Option<Zygisk>,
     pub components: Vec<ComponentState>,
     pub conflicts: Vec<Module>,
     pub keybox: Option<KeyboxVerdict>,
     pub keybox_installed: Option<InstalledFile>,
+    /// The fingerprint the engine installed, as it was downloaded or imported.
     pub fingerprint: Option<FingerprintReport>,
     pub fingerprint_installed: Option<InstalledFile>,
-    pub daemon_running: bool,
-    pub stale_keys: usize,
-    pub boot_hook: bool,
-    pub repaired_at: Option<u64>,
+    /// The `custom.pif.prop` PlayIntegrityFork reads now, with the spoof flags it has. It
+    /// differs from the applied flags when a script of the module rewrote it.
+    pub integrity: Option<FingerprintReport>,
+    /// The spoof flags `apply` writes with the saved settings, for comparison with `integrity`.
+    pub spoof: Vec<(String, bool)>,
+    /// The contents of `security_patch.txt`.
+    pub security_patch: Option<String>,
+    /// The packages of `target.txt`.
+    pub targets: Option<TargetList>,
+    /// The number of keys TEESimulator-RS persisted for applications.
+    pub persisted_keys: usize,
+    /// The persisted keys whose chains were signed by a key not in the current keybox.
+    pub stale_keys: Vec<PersistedKey>,
+    pub daemon: DaemonState,
+    pub boot_hook: BootHook,
+    pub applied_at: Option<u64>,
+    pub booted_at: Option<u64>,
+    /// The settings `apply` saved, which the boot hook applies.
+    pub settings: Settings,
+    /// The capabilities in `Engine::CAPABILITIES` that the engine lacks: when not empty, the
+    /// root manager restricts root, and commands that change the system refuse to run.
+    pub missing_capabilities: Vec<String>,
     /// Whether every piece needed for STRONG is present: both components, a strong-capable
     /// keybox, a sound fingerprint, no conflicts, and Zygisk for the integrity module.
     pub strong_ready: bool,
@@ -66,6 +117,20 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// The capabilities the engine uses. Running as uid 0 does not imply them: a root manager
+    /// can drop them (the "Restrict" policy of Magisk drops every one).
+    pub const CAPABILITIES: [Capability; 3] = [
+        // Downloaded files are read from the private directory of the application.
+        Capability::DAC_READ_SEARCH,
+        // The Play processes and the keystore daemon of other users are ended.
+        Capability::KILL,
+        // `/proc` may be mounted with `hidepid`; the processes of other users are found with it.
+        Capability::SYS_PTRACE,
+    ];
+
+    /// The properties that hold the API level the device launched with, in order of preference.
+    pub const FIRST_API_LEVEL_PROPERTIES: [&'static str; 3] = ["ro.product.first_api_level", "ro.board.first_api_level", "ro.board.api_level"];
+
     pub fn new(layout: Layout) -> Engine {
         let store = Store::new(&layout);
         let log = store.log();
@@ -74,6 +139,10 @@ impl Engine {
 
     fn now() -> Time {
         Time { seconds: i64::try_from(Log::now()).unwrap_or(0) }
+    }
+
+    fn text(bytes: &[u8], what: &str) -> Result<String, ReplayError> {
+        String::from_utf8(bytes.to_vec()).map_err(|_| ReplayError::Rejected(vec![format!("the {what} is not UTF-8 text")]))
     }
 
     /// Loads the certificate status list from its JSON, if the application fetched it. Without
@@ -91,21 +160,19 @@ impl Engine {
 
     /// Checks a keybox without installing it.
     pub fn inspect_keybox(&mut self, bytes: &[u8], status_json: Option<&str>) -> Result<KeyboxVerdict, ReplayError> {
-        let text = std::str::from_utf8(bytes).map_err(|_| ReplayError::Rejected(vec!["the keybox is not UTF-8 text".to_string()]))?;
-        let document = KeyboxDocument::parse(text)?;
+        let document = KeyboxDocument::parse(&Engine::text(bytes, "keybox")?)?;
         Ok(self.verifier(status_json).check(&document, Engine::now()))
     }
 
     pub fn inspect_fingerprint(&mut self, bytes: &[u8]) -> Result<FingerprintReport, ReplayError> {
-        let text = std::str::from_utf8(bytes).map_err(|_| ReplayError::Rejected(vec!["the fingerprint is not UTF-8 text".to_string()]))?;
-        Ok(Fingerprint::parse(text).report(Engine::now().seconds))
+        Ok(Fingerprint::parse(&Engine::text(bytes, "fingerprint")?).report(Engine::now().seconds))
     }
 
-    /// Installs a keybox after checking it: it must parse and have at least one usable key.
-    /// The keybox on disk is replaced atomically, and the one replaced is kept in the store.
+    /// Installs a keybox after checking it: it must parse and have at least one key, and no
+    /// key whose private key disagrees with its certificate. The keybox on disk is replaced
+    /// atomically, and the one replaced is kept in the store.
     pub fn install_keybox(&mut self, bytes: &[u8], source: Option<String>, status_json: Option<&str>) -> Result<InstallReport, ReplayError> {
-        let text = std::str::from_utf8(bytes).map_err(|_| ReplayError::Rejected(vec!["the keybox is not UTF-8 text".to_string()]))?;
-        let document = KeyboxDocument::parse(text)?;
+        let document = KeyboxDocument::parse(&Engine::text(bytes, "keybox")?)?;
         let verdict = self.verifier(status_json).check(&document, Engine::now());
         if !verdict.is_installable() {
             return Err(ReplayError::Rejected(vec!["the keybox has no key, or a key whose private key does not match its certificate".to_string()]));
@@ -127,32 +194,35 @@ impl Engine {
         Ok(InstallReport { sha256, changed, verdict: Some(verdict), fingerprint: None })
     }
 
-    /// Installs a fingerprint after checking it has no problems. The spoof flags and the
-    /// security patch are applied, and the result is written where PlayIntegrityFork reads it.
+    /// Installs a fingerprint after checking it has no problems. It is kept in the store as it
+    /// is, and written with the spoof flags of `settings` and its security patch where
+    /// PlayIntegrityFork and TEESimulator-RS read them.
     pub fn install_fingerprint(&mut self, bytes: &[u8], source: Option<String>, settings: &Settings) -> Result<InstallReport, ReplayError> {
-        let text = std::str::from_utf8(bytes).map_err(|_| ReplayError::Rejected(vec!["the fingerprint is not UTF-8 text".to_string()]))?;
-        let fingerprint = Fingerprint::parse(text);
+        let fingerprint = Fingerprint::parse(&Engine::text(bytes, "fingerprint")?);
         let report = fingerprint.report(Engine::now().seconds);
         if !report.problems.is_empty() {
             return Err(ReplayError::Rejected(vec!["the fingerprint has problems (see the report)".to_string()]));
         }
-        let spoof = settings.spoof_flags(self.sdk());
-        let prepared = config::fingerprint_for_integrity(&fingerprint, &spoof);
-        let rendered = prepared.file.render();
-        Files::create_directory(&self.config.fingerprint_directory(), BootHook::DIRECTORY_MODE)?;
+        let rendered = fingerprint.file.render();
         let path = self.config.fingerprint_path();
         let changed = Files::read_optional(&path)?.as_deref() != Some(rendered.as_bytes());
-        Files::write_atomic(&path, rendered.as_bytes(), KeystoreConfig::CONFIG_MODE)?;
-        self.write_integrity_fingerprint(&prepared)?;
+        self.store.create()?;
+        Files::write_atomic(&path, rendered.as_bytes(), Store::FILE_MODE)?;
+        self.write_integrity_fingerprint(&fingerprint.with_settings(&settings.spoof_flags(Engine::sdk())))?;
         if let Some(patch) = fingerprint.security_patch() {
             self.write_security_patch(patch)?;
         }
         let sha256 = Files::sha256(rendered.as_bytes());
         self.update_state(|state| state.fingerprint = Some(InstalledFile { sha256: sha256.clone(), source, installed_at: Log::now() }))?;
         if changed {
-            self.log.info("installed a fingerprint");
+            self.log.info(format!("installed a fingerprint of {}", report.fingerprint.as_deref().unwrap_or("an unknown build")));
         }
         Ok(InstallReport { sha256, changed, verdict: None, fingerprint: Some(report) })
+    }
+
+    /// The installed fingerprint, if any.
+    fn installed_fingerprint(&self) -> Result<Option<Fingerprint>, ReplayError> {
+        Ok(Files::read_optional(&self.config.fingerprint_path())?.map(|bytes| Fingerprint::parse(&String::from_utf8_lossy(&bytes))))
     }
 
     /// Writes the fingerprint to the `custom.pif.prop` of the PlayIntegrityFork module, if it
@@ -161,6 +231,7 @@ impl Engine {
         let path = self.config.custom_pif();
         let Some(directory) = path.parent() else { return Ok(false) };
         if !directory.is_dir() {
+            self.log.warning("PlayIntegrityFork is not installed; its custom.pif.prop is not written");
             return Ok(false);
         }
         Files::write_atomic(&path, fingerprint.file.render().as_bytes(), KeystoreConfig::CONFIG_MODE)?;
@@ -172,19 +243,32 @@ impl Engine {
         Files::write_atomic(&self.config.security_patch(), KeystoreConfig::security_patch_contents(patch).as_bytes(), KeystoreConfig::CONFIG_MODE)
     }
 
-    /// Builds and writes `target.txt` from the installed third-party packages and the extra
-    /// packages of the settings.
+    /// Builds and writes `target.txt` from the installed packages and `settings`. It needs a
+    /// working package manager: a failure leaves `target.txt` as it is, rather than replacing it
+    /// with a list that lacks the installed applications.
     pub fn build_targets(&mut self, settings: &Settings) -> Result<TargetList, ReplayError> {
-        let third_party = PackageManager::third_party().unwrap_or_default();
-        let list = TargetList::build(&third_party, &settings.extra_packages);
+        let installed = PackageManager::installed()?;
+        let third_party = PackageManager::third_party()?;
+        let list = TargetList::build(&installed, &third_party, settings);
         Files::create_directory(&self.layout.tricky_store(), BootHook::DIRECTORY_MODE)?;
         Files::write_atomic(&self.config.target(), list.render().as_bytes(), KeystoreConfig::CONFIG_MODE)?;
         Ok(list)
     }
 
+    /// The packages of `target.txt`, if it exists.
+    pub fn targets(&self) -> Result<Option<TargetList>, ReplayError> {
+        Ok(Files::read_optional(&self.config.target())?.map(|bytes| TargetList::parse(&String::from_utf8_lossy(&bytes))))
+    }
+
     /// The API level of the device.
-    pub fn sdk(&self) -> Option<u32> {
+    pub fn sdk() -> Option<u32> {
         android::SystemProperty::sdk()
+    }
+
+    /// The API level the device launched with, from the first property of
+    /// `FIRST_API_LEVEL_PROPERTIES` that holds a number.
+    pub fn first_api_level() -> Option<u32> {
+        Engine::FIRST_API_LEVEL_PROPERTIES.iter().find_map(|name| android::SystemProperty::get(name)?.trim().parse().ok())
     }
 
     /// The installed keybox, if any, read and checked.
@@ -199,21 +283,24 @@ impl Engine {
     /// keybox: the signers that a persisted key's chain must match to be current.
     fn keybox_signers(&self) -> Result<Vec<Vec<u8>>, ReplayError> {
         let Some(bytes) = Files::read_optional(&self.config.keybox())? else { return Ok(Vec::new()) };
-        let text = std::str::from_utf8(&bytes).map_err(|_| ReplayError::Rejected(vec!["the keybox is not UTF-8 text".to_string()]))?;
-        let document = KeyboxDocument::parse(text)?;
+        let document = KeyboxDocument::parse(&Engine::text(&bytes, "keybox")?)?;
         Ok(document.keys().filter_map(|key| key.certificates.first().map(|certificate| certificate.der.clone())).collect())
     }
 
+    fn persisted_keys(&self) -> Result<Vec<PersistedKey>, ReplayError> {
+        PersistedKey::list(&self.layout.tricky_store().join(PersistedKey::DIRECTORY))
+    }
+
     /// The persisted keys whose chains were signed by a key that is not in the current keybox:
-    /// their attestation uses an old keybox and fails once it is revoked or expires.
+    /// their attestation uses an old keybox and fails once it is revoked or expires. Without a
+    /// keybox, no key is stale: there is nothing to compare with.
     pub fn stale_keys(&self) -> Result<Vec<PersistedKey>, ReplayError> {
         let signers = self.keybox_signers()?;
         if signers.is_empty() {
             return Ok(Vec::new());
         }
         let signers: Vec<&[u8]> = signers.iter().map(Vec::as_slice).collect();
-        let directory = self.layout.tricky_store().join(PersistedKey::DIRECTORY);
-        Ok(PersistedKey::list(&directory)?.into_iter().filter(|key| key.is_stale(&signers)).collect())
+        Ok(self.persisted_keys()?.into_iter().filter(|key| key.is_stale(&signers)).collect())
     }
 
     /// Removes the stale persisted keys. The keystore daemon regenerates a key an application
@@ -243,45 +330,96 @@ impl Engine {
     }
 
     /// Ends the DroidGuard and Play Store processes so they re-evaluate Play Integrity. The
-    /// system restarts them; a failure to end one is not fatal.
+    /// system restarts them; a failure to end one is logged, not fatal.
     pub fn refresh_play(&mut self) {
         let processes = android::ProcessTable::list().unwrap_or_default();
         for name in REFRESH_PROCESSES {
             for process in processes.iter().filter(|process| process.name == name) {
-                let _ = process.kill();
+                if let Err(error) = process.kill() {
+                    self.log.warning(format!("cannot end {name} ({}): {error}", process.pid));
+                }
             }
         }
-        let _ = ActivityManager::kill_background();
+        if let Err(error) = ActivityManager::kill_background() {
+            self.log.warning(format!("cannot end the background processes: {error}"));
+        }
     }
 
-    /// Re-applies the configuration without fetching anything: rebuild `target.txt`, re-apply
-    /// the spoof flags and the security patch from the installed fingerprint, remove stale
-    /// persisted keys, and restart the daemon. This is what runs at boot and periodically; it
-    /// is what keeps the verdict from drifting after the modules' own scripts run.
-    pub fn apply(&mut self, settings: &Settings, restart: bool) -> Result<ApplyReport, ReplayError> {
-        let targets = self.build_targets(settings)?.targets.len();
-        let spoof = settings.spoof_flags(self.sdk());
+    /// Re-applies the configuration without fetching anything: saves `settings` for the boot
+    /// hook (except at boot, which applies the saved ones), rebuilds `target.txt`, re-applies the
+    /// spoof flags and the security patch from the installed fingerprint, removes stale
+    /// persisted keys, and restarts as `mode` says. This is what keeps the verdict from
+    /// drifting after the modules' own scripts run.
+    pub fn apply(&mut self, settings: &Settings, mode: ApplyMode) -> Result<ApplyReport, ReplayError> {
+        if mode != ApplyMode::EarlyBoot {
+            self.store.save_settings(settings)?;
+        }
+        let rebuilt = if mode == ApplyMode::EarlyBoot {
+            None
+        } else {
+            match self.build_targets(settings) {
+                Ok(list) => Some(list),
+                Err(error) => {
+                    self.log.warning(format!("target.txt is kept as it is: {error}"));
+                    None
+                }
+            }
+        };
+        let targets_rebuilt = rebuilt.is_some();
+        let targets = match rebuilt {
+            Some(list) => list.targets.len(),
+            None => self.targets()?.map_or(0, |list| list.targets.len()),
+        };
+        let spoof = settings.spoof_flags(Engine::sdk());
         let mut security_patch = None;
-        if let Some(bytes) = Files::read_optional(&self.config.fingerprint_path())? {
-            let fingerprint = Fingerprint::parse(&String::from_utf8_lossy(&bytes));
-            let prepared = fingerprint.with_settings(&spoof);
-            self.write_integrity_fingerprint(&prepared)?;
+        if let Some(fingerprint) = self.installed_fingerprint()? {
+            self.write_integrity_fingerprint(&fingerprint.with_settings(&spoof))?;
             if let Some(patch) = fingerprint.security_patch() {
                 self.write_security_patch(patch)?;
                 security_patch = Some(patch.to_string());
             }
+        } else {
+            self.log.warning("no fingerprint is installed; the spoof flags are not written");
         }
         let stale_keys_removed = self.remove_stale_keys()?;
-        let daemon_restarted = if restart { self.restart()? } else { false };
-        self.update_state(|state| state.repaired_at = Some(Log::now()))?;
+        let daemon_restarted = if mode == ApplyMode::Restart { self.restart()? } else { false };
+        self.update_state(|state| state.applied_at = Some(Log::now()))?;
         Ok(ApplyReport {
             targets,
+            targets_rebuilt,
             security_patch,
             spoof: spoof.values.iter().map(|(flag, value)| (flag.key().to_string(), *value)).collect(),
             stale_keys_removed,
             daemon_restarted,
-            refreshed: daemon_restarted,
         })
+    }
+
+    /// Runs at boot from the boot hook: applies the saved settings in `ApplyMode::EarlyBoot`.
+    /// When `package` (the application) is uninstalled, the hook removes itself instead, so
+    /// that nothing of the application keeps running at boot.
+    pub fn boot(&mut self, package: &str) -> Result<BootReport, ReplayError> {
+        Engine::require_root()?;
+        if !Engine::is_package_present(&self.layout, package) {
+            self.log.warning(format!("{package} seems to be uninstalled; the boot hook removes itself"));
+            BootHook::remove(&self.layout)?;
+            return Ok(BootReport::Uninstalled);
+        }
+        let settings = self.store.settings()?;
+        let report = self.apply(&settings, ApplyMode::EarlyBoot)?;
+        self.update_state(|state| state.booted_at = Some(Log::now()))?;
+        Ok(BootReport::Applied { report })
+    }
+
+    /// Whether `package` is installed, as the package list of the previous boot
+    /// (`/data/system/packages.list`) shows before the framework starts. The package manager
+    /// rewrites the list as soon as a package is installed or removed, and it covers adopted
+    /// storage, which is not mounted yet at boot. A list that cannot be read counts as holding
+    /// the package, so that the hook never removes itself only because it cannot look.
+    pub fn is_package_present(layout: &Layout, package: &str) -> bool {
+        match PackageList::read_from(&layout.packages_list()) {
+            Ok(packages) => PackageList::app_id_of(&packages, package).is_some(),
+            Err(_) => true,
+        }
     }
 
     /// Installs a module zip of `component` with the root manager. The module takes effect at
@@ -292,38 +430,56 @@ impl Engine {
         manager.install_module(&self.layout, zip)
     }
 
-    pub fn install_hook(&mut self, executable: &str) -> Result<BootHook, ReplayError> {
-        BootHook::install(&self.layout, executable)
+    /// Installs the boot hook for `package`, with a copy of the running engine.
+    pub fn install_hook(&mut self, package: &str) -> Result<BootHook, ReplayError> {
+        let executable = std::env::current_exe().map_err(|error| ReplayError::io("find the engine executable", error))?;
+        BootHook::install(&self.layout, &executable, package)
     }
 
     pub fn remove_hook(&mut self) -> Result<BootHook, ReplayError> {
         BootHook::remove(&self.layout)
     }
 
-    /// Reads the whole state of the device.
+    /// Reads the whole state of the device. Parts that cannot be read are logged and left
+    /// empty, so that one broken file does not hide everything else.
     pub fn status(&mut self, status_json: Option<&str>) -> Result<StatusReport, ReplayError> {
-        let manager = RootManager::installed(&self.layout);
-        let root_manager = match manager.as_slice() {
-            [single] => Some(*single),
-            _ => manager.first().copied(),
-        };
-        let zygisk = root_manager.map(|manager| manager.zygisk(&self.layout));
+        let root_managers = RootManager::installed(&self.layout);
+        let zygisk = root_managers.first().map(|manager| manager.zygisk(&self.layout));
         let components: Vec<ComponentState> = Component::ALL.iter().map(|component| component.state(&self.layout)).collect();
         let conflicts = Conflicts::active(&self.layout);
-        let keybox = self.keybox_verdict(status_json)?;
-        let fingerprint = Files::read_optional(&self.config.fingerprint_path())?
-            .map(|bytes| Fingerprint::parse(&String::from_utf8_lossy(&bytes)).report(Engine::now().seconds));
-        let daemon_running = KeystoreDaemon::new(&self.layout).state().is_running();
-        let stale_keys = self.stale_keys().map(|keys| keys.len()).unwrap_or(0);
-        let boot_hook = BootHook::current(&self.layout).is_installed();
+        let keybox = self.keybox_verdict(status_json).unwrap_or_else(|error| {
+            self.log.warning(format!("the installed keybox cannot be read: {error}"));
+            None
+        });
+        let now = Engine::now().seconds;
+        let fingerprint = self.readable(self.installed_fingerprint(), "the installed fingerprint").map(|fingerprint| fingerprint.report(now));
+        let integrity = self
+            .readable(Files::read_optional(&self.config.custom_pif()), "custom.pif.prop")
+            .map(|bytes| Fingerprint::parse(&String::from_utf8_lossy(&bytes)).report(now));
+        let security_patch = self
+            .readable(Files::read_optional(&self.config.security_patch()), "security_patch.txt")
+            .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string());
+        let targets = self.readable(self.targets(), "target.txt");
+        let persisted_keys = self.persisted_keys().map(|keys| keys.len()).unwrap_or(0);
+        let stale_keys = self.stale_keys().unwrap_or_default();
+        let daemon = KeystoreDaemon::new(&self.layout).state();
+        let boot_hook = BootHook::current(&self.layout);
         let state = self.store.state(&mut self.log);
+        let settings = self.store.settings().unwrap_or_else(|error| {
+            self.log.warning(format!("the saved settings cannot be read: {error}"));
+            Settings::default()
+        });
+        let spoof = settings.spoof_flags(Engine::sdk()).values.iter().map(|(flag, value)| (flag.key().to_string(), *value)).collect();
+        let missing_capabilities = Engine::missing_capabilities().unwrap_or_default().iter().map(Capability::to_string).collect();
         let strong_ready = components.iter().all(ComponentState::is_ready)
             && conflicts.is_empty()
             && keybox.as_ref().is_some_and(KeyboxVerdict::is_strong_capable)
             && fingerprint.as_ref().is_some_and(|report| report.problems.is_empty())
             && zygisk.as_ref().is_some_and(Zygisk::available);
         Ok(StatusReport {
-            root_manager,
+            engine_version: env!("CARGO_PKG_VERSION").to_string(),
+            first_api_level: Engine::first_api_level(),
+            root_managers,
             zygisk,
             components,
             conflicts,
@@ -331,11 +487,27 @@ impl Engine {
             keybox_installed: state.keybox,
             fingerprint,
             fingerprint_installed: state.fingerprint,
-            daemon_running,
+            integrity,
+            spoof,
+            security_patch,
+            targets,
+            persisted_keys,
             stale_keys,
+            daemon,
             boot_hook,
-            repaired_at: state.repaired_at,
+            applied_at: state.applied_at,
+            booted_at: state.booted_at,
+            settings,
+            missing_capabilities,
             strong_ready,
+        })
+    }
+
+    /// The value of `result`, or `None` with a warning naming `what` when it could not be read.
+    fn readable<T>(&mut self, result: Result<Option<T>, ReplayError>, what: &str) -> Option<T> {
+        result.unwrap_or_else(|error| {
+            self.log.warning(format!("{what} cannot be read: {error}"));
+            None
         })
     }
 
@@ -345,25 +517,27 @@ impl Engine {
         self.store.save(&state)
     }
 
-    /// Checks that the engine runs as root (uid 0), which every operation that changes the
-    /// system needs.
+    pub fn uid() -> u32 {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        return rustix::process::geteuid().as_raw();
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        return u32::MAX;
+    }
+
+    /// The capabilities of `Engine::CAPABILITIES` that the engine lacks.
+    pub fn missing_capabilities() -> Result<Vec<Capability>, ReplayError> {
+        let capabilities = ProcessCapabilities::current().map_err(|error| ReplayError::io("read the capabilities of the engine", error))?;
+        Ok(Engine::CAPABILITIES.into_iter().filter(|capability| !capabilities.effective.contains(*capability)).collect())
+    }
+
+    /// Requires running as root (uid 0) with every capability in `Engine::CAPABILITIES`, which
+    /// every operation that changes the system needs.
     pub fn require_root() -> Result<(), ReplayError> {
-        let uid = current_euid();
-        if uid == 0 { Ok(()) } else { Err(ReplayError::refused(format!("the engine must run as root, but runs as uid {uid}"))) }
+        let uid = Engine::uid();
+        if uid != 0 {
+            return Err(ReplayError::refused(format!("the engine must run as root (uid 0), not uid {uid}")));
+        }
+        let missing = Engine::missing_capabilities()?;
+        if missing.is_empty() { Ok(()) } else { Err(ReplayError::Restricted(missing)) }
     }
-}
-
-/// The effective user ID of the engine process.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn current_euid() -> u32 {
-    // SAFETY: geteuid takes no arguments and always succeeds.
-    unsafe extern "C" {
-        fn geteuid() -> u32;
-    }
-    unsafe { geteuid() }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn current_euid() -> u32 {
-    0
 }

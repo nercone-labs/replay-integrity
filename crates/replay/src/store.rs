@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Files, Layout, Log, ReplayError};
+use crate::{Files, Layout, Log, ReplayError, Settings};
 
 /// A file the engine installed: what it was, where it came from and when.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,12 +21,16 @@ pub struct InstalledFile {
 pub struct State {
     pub keybox: Option<InstalledFile>,
     pub fingerprint: Option<InstalledFile>,
-    /// When `repair` last ran, in seconds since the Unix epoch.
-    pub repaired_at: Option<u64>,
+    /// When `apply` last ran, in seconds since the Unix epoch.
+    pub applied_at: Option<u64>,
+    /// When the boot hook last ran `boot`, in seconds since the Unix epoch.
+    pub booted_at: Option<u64>,
 }
 
 /// The directory of the engine, `/data/adb/replay-integrity`, readable by root only:
-/// `state.json`, the keybox replaced last (`previous-keybox.xml`) and the log.
+/// `state.json`, the settings applied last (`settings.json`), the installed fingerprint
+/// (`fingerprint.prop`), the keybox replaced last (`previous-keybox.xml`), the log, and the copy
+/// of the engine that the boot hook runs (`replay`).
 pub struct Store {
     pub directory: PathBuf,
 }
@@ -37,6 +41,9 @@ impl Store {
     pub const STATE: &'static str = "state.json";
     pub const PREVIOUS_KEYBOX: &'static str = "previous-keybox.xml";
     pub const LOG: &'static str = "replay.log";
+    pub const SETTINGS: &'static str = "settings.json";
+    pub const EXECUTABLE: &'static str = "replay";
+    pub const EXECUTABLE_MODE: u32 = 0o700;
 
     pub fn new(layout: &Layout) -> Store {
         Store { directory: layout.store() }
@@ -71,6 +78,41 @@ impl Store {
         self.create()?;
         let json = serde_json::to_vec_pretty(state).map_err(|error| ReplayError::io("serialize the state", std::io::Error::other(error)))?;
         Files::write_atomic(&self.directory.join(Store::STATE), &json, Store::FILE_MODE)
+    }
+
+    /// The settings `apply` saved, or the defaults when none were saved. Saved settings that
+    /// cannot be read are an error: applying the defaults instead would silently undo the
+    /// user's choices.
+    pub fn settings(&self) -> Result<Settings, ReplayError> {
+        match Files::read_optional(&self.directory.join(Store::SETTINGS))? {
+            Some(bytes) => Settings::parse(&bytes),
+            None => Ok(Settings::default()),
+        }
+    }
+
+    pub fn save_settings(&self, settings: &Settings) -> Result<(), ReplayError> {
+        self.create()?;
+        let json = serde_json::to_vec_pretty(settings).map_err(|error| ReplayError::io("serialize the settings", std::io::Error::other(error)))?;
+        Files::write_atomic(&self.directory.join(Store::SETTINGS), &json, Store::FILE_MODE)
+    }
+
+    /// The copy of the engine that the boot hook runs. The engine of the application lives in
+    /// its native library directory, whose path changes with every update of the application,
+    /// so the hook runs a copy at a fixed path instead.
+    pub fn executable(&self) -> PathBuf {
+        self.directory.join(Store::EXECUTABLE)
+    }
+
+    /// Copies `source` (the running engine) to `executable`, replacing an earlier copy atomically.
+    pub fn install_executable(&self, source: &std::path::Path) -> Result<PathBuf, ReplayError> {
+        let target = self.executable();
+        if source == target {
+            return Ok(target);
+        }
+        self.create()?;
+        let bytes = Files::read(source)?;
+        Files::write_atomic(&target, &bytes, Store::EXECUTABLE_MODE)?;
+        Ok(target)
     }
 
     pub fn previous_keybox(&self) -> PathBuf {

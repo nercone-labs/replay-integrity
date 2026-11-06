@@ -4,7 +4,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use replay::{Engine, Fingerprint, FingerprintProblem, Layout, PatchDate, Settings, SpoofFlag, SpoofFlags, TargetList, TargetMode};
+use replay::{
+    ApplyMode, BootHook, BootReport, Engine, Fingerprint, FingerprintProblem, Layout, PatchDate, Settings, SpoofFlag, SpoofFlags, Target, TargetList,
+    TargetMode,
+};
 
 const TEST_KEYBOX: &str = include_str!("../../keybox/tests/fixtures/test-keybox.xml");
 
@@ -72,8 +75,11 @@ fn applying_settings_writes_flags_and_the_patch_property() {
 
 #[test]
 fn the_target_list_always_includes_the_play_stack_and_excludes_xposed() {
-    let third_party = ["com.example.bank".to_string(), "org.lsposed.manager".to_string(), "com.google.android.apps.walletnfcrel".to_string()];
-    let list = TargetList::build(&third_party, &["com.extra.app".to_string()]);
+    let third_party = ["com.example.bank".to_string(), "org.lsposed.manager".to_string()];
+    // A wallet application that came with the system image is still a target.
+    let installed = ["android".to_string(), "com.google.android.apps.walletnfcrel".to_string()];
+    let settings = Settings { extra_packages: vec!["com.extra.app".to_string()], ..Settings::default() };
+    let list = TargetList::build(&installed, &third_party, &settings);
     let packages: Vec<&str> = list.packages().collect();
     assert!(packages.contains(&"com.google.android.gms"));
     assert!(packages.contains(&"com.android.vending"));
@@ -125,11 +131,139 @@ fn apply_writes_the_configuration_from_the_installed_fingerprint() {
         "FINGERPRINT=google/p/p:CANARY/A/1:user/release-keys\nMANUFACTURER=Google\nMODEL=Pixel\nBRAND=google\nPRODUCT=p\nDEVICE=p\nSECURITY_PATCH=2026-11-05\n";
     let mut engine = Engine::new(layout.clone());
     engine.install_fingerprint(text.as_bytes(), None, &Settings::default()).unwrap();
-    let report = engine.apply(&Settings::default(), false).unwrap();
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
     assert_eq!(report.security_patch.as_deref(), Some("2026-11-05"));
     assert!(!report.daemon_restarted);
+    // At boot the target list is kept: the package manager does not run yet.
+    assert!(!report.targets_rebuilt);
     // security_patch.txt is written in the per-component form TEESimulator-RS reads.
     let patch = fs::read_to_string(layout.tricky_store().join("security_patch.txt")).unwrap();
     assert!(patch.contains("system=2026-11-05") && patch.contains("boot=2026-11-05") && patch.contains("vendor=2026-11-05"));
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn excluded_packages_and_the_target_mode_shape_the_list() {
+    let third_party = ["com.example.bank".to_string(), "com.example.game".to_string()];
+    let settings = Settings {
+        excluded_packages: vec!["com.example.game".to_string(), "com.google.android.gms".to_string()],
+        target_mode: TargetMode::Generate,
+        ..Settings::default()
+    };
+    let list = TargetList::build(&[], &third_party, &settings);
+    let packages: Vec<&str> = list.packages().collect();
+    assert!(packages.contains(&"com.example.bank"));
+    assert!(!packages.contains(&"com.example.game"));
+    // The Play stack cannot be excluded.
+    assert!(packages.contains(&"com.google.android.gms"));
+    assert!(list.targets.iter().all(|target| target.mode == TargetMode::Generate));
+    assert!(list.render().lines().all(|line| line.ends_with('!')));
+}
+
+#[test]
+fn package_names_follow_the_rules_of_the_package_manager() {
+    for valid in ["com.example", "a.b", "com.example.app_2", "A.B9"] {
+        assert!(Target::is_package_name(valid), "{valid}");
+    }
+    for invalid in ["", "example", "com..example", "com.1example", ".com.example", "com.example.", "com.exa mple", "com.example\nevil.app", "com/example"] {
+        assert!(!Target::is_package_name(invalid), "{invalid:?}");
+    }
+}
+
+#[test]
+fn settings_that_could_corrupt_the_target_list_are_rejected() {
+    assert!(Settings::parse(br#"{"extraPackages":["com.example.app"]}"#).is_ok());
+    assert!(Settings::parse(br#"{"extraPackages":["com.example.app\nother"]}"#).is_err());
+    assert!(Settings::parse(br#"{"excludedPackages":["not a package"]}"#).is_err());
+    assert!(Settings::parse(br#"{"spoofOverrides":[["spoofNothing",true]]}"#).is_err());
+    assert!(Settings::parse(br#"{"spoofOverrides":[["spoofProvider",true]]}"#).is_ok());
+    assert!(Settings::parse(b"not json").is_err());
+    // Missing fields take their defaults.
+    assert_eq!(Settings::parse(b"{}").unwrap(), Settings::default());
+}
+
+#[test]
+fn apply_saves_the_settings_that_boot_applies_again() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let text =
+        "FINGERPRINT=google/p/p:CANARY/A/1:user/release-keys\nMANUFACTURER=Google\nMODEL=Pixel\nBRAND=google\nPRODUCT=p\nDEVICE=p\nSECURITY_PATCH=2026-11-05\n";
+    fs::create_dir_all(layout.modules().join("playintegrityfix")).unwrap();
+    let settings = Settings { spoof_overrides: vec![("spoofProvider".to_string(), true)], ..Settings::default() };
+    let mut engine = Engine::new(layout.clone());
+    engine.install_fingerprint(text.as_bytes(), None, &settings).unwrap();
+    engine.apply(&settings, ApplyMode::NoRestart).unwrap();
+    assert_eq!(engine.store.settings().unwrap(), settings);
+    // Something else (a script of the module) resets the flag; applying the saved settings at boot restores it.
+    let pif = layout.modules().join("playintegrityfix/custom.pif.prop");
+    fs::write(&pif, fs::read_to_string(&pif).unwrap().replace("spoofProvider=1", "spoofProvider=0")).unwrap();
+    let saved = engine.store.settings().unwrap();
+    engine.apply(&saved, ApplyMode::EarlyBoot).unwrap();
+    assert!(fs::read_to_string(&pif).unwrap().contains("spoofProvider=1"));
+    // The fingerprint is kept in the store as it was installed, without flags.
+    let stored = fs::read_to_string(layout.store().join("fingerprint.prop")).unwrap();
+    assert!(!stored.contains("spoofProvider"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_boot_hook_runs_a_copy_of_the_engine_at_a_fixed_path() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    fs::create_dir_all(root.join("data/adb/magisk")).unwrap();
+    let executable = root.join("engine-binary");
+    fs::write(&executable, b"#!/system/bin/sh\n").unwrap();
+    let hook = BootHook::install(&layout, &executable, "dev.nercone.replayintegrity").unwrap();
+    assert!(hook.is_installed());
+    let script = fs::read_to_string(&hook.scripts[0]).unwrap();
+    let copy = layout.store().join("replay");
+    assert!(script.contains(&format!("'{}' boot --package 'dev.nercone.replayintegrity'", copy.display())), "{script}");
+    assert_eq!(fs::read(&copy).unwrap(), b"#!/system/bin/sh\n");
+    // A package name that is not one is refused, so the script cannot carry anything else.
+    assert!(BootHook::script(&layout, "x'; rm -rf /; '").is_err());
+    let removed = BootHook::remove(&layout).unwrap();
+    assert!(!removed.is_installed());
+    assert!(!copy.exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_uninstalled_application_is_told_from_the_package_list() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let package = "dev.nercone.replayintegrity";
+    // Without a readable package list, the application counts as installed.
+    assert!(Engine::is_package_present(&layout, package));
+    fs::create_dir_all(root.join("data/system")).unwrap();
+    let list = root.join("data/system/packages.list");
+    fs::write(&list, "com.other.app 10100 0 /data/user/0/com.other.app default:targetSdkVersion=36 3003 0 1 1 com.android.vending\n").unwrap();
+    assert!(!Engine::is_package_present(&layout, package));
+    fs::write(&list, format!("com.other.app 10100 0 /data/user/0/com.other.app default 3003\n{package} 10232 0 /data/user/0/{package} default none\n"))
+        .unwrap();
+    assert!(Engine::is_package_present(&layout, package));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_package_listed_twice_in_target_txt_appears_once() {
+    let list = TargetList::parse("com.example\n[other.xml]\ncom.example!\ncom.other?\n");
+    let packages: Vec<&str> = list.packages().collect();
+    assert_eq!(packages, ["com.example", "com.other"]);
+    assert_eq!(list.targets[0].mode, TargetMode::Auto);
+}
+
+#[test]
+fn boot_reports_its_outcome_by_name() {
+    let report = serde_json::to_value(BootReport::Uninstalled).unwrap();
+    assert_eq!(report["outcome"], "uninstalled");
+}
+
+#[test]
+fn settings_as_the_application_writes_them_are_read() {
+    // The JSON kotlinx.serialization writes for the application's `EngineSettings`.
+    let settings =
+        Settings::parse(br#"{"extraPackages":["com.extra"],"excludedPackages":[],"targetMode":"patch","spoofOverrides":[["spoofProvider",true]]}"#).unwrap();
+    assert_eq!(settings.target_mode, TargetMode::Patch);
+    assert_eq!(settings.spoof_flags(Some(34)).get(SpoofFlag::Provider), Some(true));
+    assert_eq!(settings.extra_packages, vec!["com.extra".to_string()]);
 }

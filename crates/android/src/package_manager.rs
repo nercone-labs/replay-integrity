@@ -163,10 +163,10 @@ impl PackageManager {
         }
     }
 
-    /// Whether `package` is installed. The answer comes from the full list of packages, which
-    /// the package manager gives only when it works; a failure of the command, or a list
-    /// without the system package itself, is an error rather than "not installed".
-    pub fn is_installed(package: &str) -> Result<bool, CommandError> {
+    /// Every installed package (`cmd package list packages`). The list comes only from a
+    /// working package manager: a failure of the command, or a list without the system package
+    /// itself (as before the framework starts), is an error rather than an empty list.
+    pub fn installed() -> Result<Vec<String>, CommandError> {
         let output = SystemCommand::run(SystemCommand::CMD, &["package", "list", "packages"])?;
         let packages = PackageManager::parse_packages(&output);
         if !packages.contains(&PackageManager::SYSTEM_PACKAGE) {
@@ -176,7 +176,12 @@ impl PackageManager {
                 output: "the list has no system package".to_string(),
             });
         }
-        Ok(packages.contains(&package))
+        Ok(packages.into_iter().map(str::to_string).collect())
+    }
+
+    /// Whether `package` is installed, from `installed`.
+    pub fn is_installed(package: &str) -> Result<bool, CommandError> {
+        Ok(PackageManager::installed()?.iter().any(|installed| installed == package))
     }
 
     /// The packages that were installed by the user or an application store, not with the system

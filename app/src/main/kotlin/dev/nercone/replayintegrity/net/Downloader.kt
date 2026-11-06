@@ -16,34 +16,34 @@ data class Fetched(val bytes: ByteArray, val source: String)
  * fingerprint and Google's certificate status list. The application has ordinary TLS, so no
  * special networking is needed here; the engine does the parsing and the trust decisions.
  *
- * The keybox mirror and the fingerprint source are those the AlwaysStrong module uses. The URLs
- * can be overridden, so the user is never tied to one mirror.
+ * The default keybox mirror and fingerprint source are those the AlwaysStrong module uses; the
+ * user may choose others in the settings. Only HTTPS is accepted.
  */
-class Downloader(
-    val keyboxUrl: String = DEFAULT_KEYBOX_URL,
-    val fingerprintUrl: String = DEFAULT_FINGERPRINT_URL,
-) {
+class Downloader {
     /**
-     * The keybox, base64-decoded. The mirror serves the keybox as base64 of the XML; it is
-     * decoded here and the engine checks that it is a keybox before anything is installed.
+     * The keybox at `url`. A mirror may serve the XML itself or base64 of it (the default
+     * mirror does); both are accepted, and the engine checks that it is a keybox before anything
+     * is installed.
      */
-    suspend fun keybox(): Fetched {
-        val encoded = fetch(keyboxUrl)
+    suspend fun keybox(url: String): Fetched {
+        val body = fetch(url)
+        if (looksLikeXML(body)) return Fetched(body, url)
         val decoded = try {
-            Base64.decode(encoded, Base64.DEFAULT)
+            Base64.decode(body, Base64.DEFAULT)
         } catch (error: IllegalArgumentException) {
-            throw IOException("the keybox mirror did not return base64", error)
+            throw IOException("the keybox source returned neither XML nor base64", error)
         }
-        if (decoded.isEmpty()) throw IOException("the keybox mirror returned an empty keybox")
-        return Fetched(decoded, keyboxUrl)
+        if (!looksLikeXML(decoded)) throw IOException("the keybox source returned no keybox")
+        return Fetched(decoded, url)
     }
 
-    suspend fun fingerprint(): Fetched = Fetched(fetch(fingerprintUrl), fingerprintUrl)
+    suspend fun fingerprint(url: String): Fetched = Fetched(fetch(url), url)
 
     suspend fun statusList(): Fetched = Fetched(fetch(STATUS_LIST_URL), STATUS_LIST_URL)
 
     /** Downloads a URL into memory, following redirects, with bounded timeouts. */
     suspend fun fetch(url: String): ByteArray = withContext(Dispatchers.IO) {
+        if (!isAcceptable(url)) throw IOException("$url is not an HTTPS URL")
         var current = url
         for (redirect in 0 until MAX_REDIRECTS) {
             val connection = (URL(current).openConnection() as HttpURLConnection).apply {
@@ -60,7 +60,7 @@ class Downloader(
                     val next = URL(URL(current), location)
                     // Never follow a redirect that drops from HTTPS to HTTP: a network attacker
                     // could otherwise strip the transport security of these fetches.
-                    if (URL(current).protocol == "https" && next.protocol != "https") {
+                    if (next.protocol != "https") {
                         throw IOException("$current redirected to a non-HTTPS URL")
                     }
                     current = next.toString()
@@ -80,6 +80,15 @@ class Downloader(
     }
 
     companion object {
+        /** Whether `url` can be downloaded from: an absolute HTTPS URL with a host. */
+        fun isAcceptable(url: String): Boolean = runCatching { URL(url) }.getOrNull()?.let { it.protocol == "https" && !it.host.isNullOrEmpty() } == true
+
+        /** Whether `bytes` start, after white space and a byte order mark, with `<`. */
+        fun looksLikeXML(bytes: ByteArray): Boolean {
+            val text = bytes.copyOf(minOf(bytes.size, 64)).toString(Charsets.UTF_8).trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+            return text.startsWith("<")
+        }
+
         /** The keybox mirror AlwaysStrong uses; served over HTTPS as base64 of the keybox XML. */
         const val DEFAULT_KEYBOX_URL = "https://evoker.qzz.io/key"
 

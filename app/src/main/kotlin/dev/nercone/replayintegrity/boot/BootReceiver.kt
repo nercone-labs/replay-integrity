@@ -10,13 +10,16 @@ import androidx.work.WorkManager
 import dev.nercone.replayintegrity.config.Settings
 
 /**
- * Runs `repair` after a boot, in case the boot hook was not installed (no root manager that runs
- * boot scripts) or Shizuku, which starts after this application, provides the only privilege.
+ * Repairs after a boot, once the system has started: the boot hook keeps the target list as it
+ * is (the package manager does not run that early), may be missing (no root manager that runs
+ * boot scripts), or Shizuku, which starts after the boot, provides the only privilege. The
+ * periodic refresh is scheduled again too, in case the schedule was lost.
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val settings = Settings(context).values.value
+        RefreshWorker.schedule(context, settings, replace = false)
         if (!settings.repairAfterBoot || !settings.applied) return
         val request = OneTimeWorkRequestBuilder<RepairWorker>()
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)

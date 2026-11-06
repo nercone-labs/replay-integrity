@@ -1,19 +1,21 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::{Files, Layout, ReplayError, RootManager};
+use crate::{Files, Layout, ReplayError, RootManager, Store, Target};
 
-/// A boot script of a root manager that runs the engine's `repair` at every boot, before the
-/// Android framework starts, so that a keybox revoked or expired while the device was off is
-/// replaced and the keystore daemon reloaded before any application attests.
+/// A boot script of a root manager that runs the engine's `boot` at every boot, before the
+/// Android framework starts: it removes stale persisted keys and re-applies the spoof flags and
+/// the security patch with the saved settings, before the keystore daemon starts and before any
+/// application attests.
 ///
-/// The scripts installed by the root managers run at different stages. Magisk runs
-/// `post-fs-data.d` before it mounts its modules; KernelSU and APatch run `post-mount.d` after
-/// they mount theirs, the stage used there so the module files the engine needs are in place.
+/// The scripts run at different stages. Magisk runs `post-fs-data.d` before it mounts its
+/// modules; KernelSU and APatch run `post-mount.d` after they mount theirs. Both are before the
+/// `service` stage, at which TEESimulator-RS starts its daemon.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootHook {
+    /// The installed root managers, for which a script would be installed.
     pub managers: Vec<RootManager>,
     /// The installed scripts.
     pub scripts: Vec<PathBuf>,
@@ -47,29 +49,37 @@ impl BootHook {
         paths
     }
 
-    /// The script. It runs the engine, in the native library directory of the application, with
-    /// the `repair --boot` command. The path of the engine is written at installation, so that
-    /// the script keeps working when the application is updated only if the path is stable; the
-    /// application reinstalls the hook after each update to refresh it.
-    pub fn script(executable: &str, store: &Layout) -> String {
+    /// The script. It runs the copy of the engine in the store (`Store::executable`) with the
+    /// `boot` command; `package` is the application, so that the engine can tell when the
+    /// application was uninstalled and remove the hook.
+    pub fn script(layout: &Layout, package: &str) -> Result<String, ReplayError> {
+        if !Target::is_package_name(package) {
+            return Err(ReplayError::refused(format!("\"{package}\" is not a package name")));
+        }
         let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
-        format!(
+        let executable = Store::new(layout).executable();
+        Ok(format!(
             "#!/system/bin/sh\n\
-             # Replay Integrity re-checks the keybox and reloads the keystore here, before the\n\
-             # Android framework starts, so a keybox revoked or expired while the device was off\n\
-             # is replaced before any application attests. It is removed with the application;\n\
-             # deleting this file disables it.\n\
-             {} repair --boot --root {} >/dev/null 2>&1\n",
-            quote(executable),
-            quote(&store.root.to_string_lossy()),
-        )
+             # Replay Integrity removes stale attestation keys and re-applies its configuration here,\n\
+             # before the keystore daemon and the Android framework start. It removes itself when\n\
+             # Replay Integrity is uninstalled; deleting this file disables it.\n\
+             {} boot --package {} --root {} >/dev/null 2>&1\n",
+            quote(&executable.to_string_lossy()),
+            quote(package),
+            quote(&layout.root.to_string_lossy()),
+        ))
     }
 
-    /// Installs a script for every installed root manager. Without a root manager that runs
-    /// boot scripts, nothing is installed and the returned hook has no scripts.
-    pub fn install(layout: &Layout, executable: &str) -> Result<BootHook, ReplayError> {
+    /// Copies the running engine (`executable`) into the store and installs a script for every
+    /// installed root manager. Without a root manager that runs boot scripts, nothing is
+    /// installed and the returned hook has no scripts.
+    pub fn install(layout: &Layout, executable: &Path, package: &str) -> Result<BootHook, ReplayError> {
         let managers = RootManager::installed(layout);
-        let script = BootHook::script(executable, layout);
+        let script = BootHook::script(layout, package)?;
+        if managers.is_empty() {
+            return Ok(BootHook::current(layout));
+        }
+        Store::new(layout).install_executable(executable)?;
         for manager in &managers {
             let directory = manager.hook_directory(layout);
             Files::create_directory(&directory, BootHook::DIRECTORY_MODE)?;
@@ -78,11 +88,12 @@ impl BootHook {
         Ok(BootHook::current(layout))
     }
 
-    /// Removes every script of this engine.
+    /// Removes every script of this engine and the copy of the engine they run.
     pub fn remove(layout: &Layout) -> Result<BootHook, ReplayError> {
         for path in BootHook::candidates(layout) {
             Files::remove(&path)?;
         }
+        Files::remove(&Store::new(layout).executable())?;
         Ok(BootHook::current(layout))
     }
 

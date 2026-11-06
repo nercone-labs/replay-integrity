@@ -1,7 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// How TEESimulator-RS handles the keys of a package (`target.txt`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TargetMode {
     /// No suffix: the certificates of the device's own keystore are patched when it works,
@@ -29,6 +29,25 @@ impl TargetMode {
 pub struct Target {
     pub package: String,
     pub mode: TargetMode,
+}
+
+impl Target {
+    /// Whether `name` is a package name as the package manager accepts it: two or more
+    /// segments separated by `.`, each a letter followed by letters, digits and `_`.
+    pub fn is_package_name(name: &str) -> bool {
+        let mut segments = 0;
+        for segment in name.split('.') {
+            let mut characters = segment.chars();
+            if !characters.next().is_some_and(|first| first.is_ascii_alphabetic()) {
+                return false;
+            }
+            if !characters.all(|character| character.is_ascii_alphanumeric() || character == '_') {
+                return false;
+            }
+            segments += 1;
+        }
+        segments >= 2
+    }
 }
 
 /// The list of packages whose keys TEESimulator-RS attests (`target.txt`), without the keybox
@@ -59,28 +78,25 @@ impl TargetList {
     pub const EXPOSED: [&'static str; 4] =
         ["org.lsposed.manager", "io.github.lsposed.manager", "de.robv.android.xposed.installer", "org.meowcat.edxposed.manager"];
 
-    /// Builds the list from the installed third-party packages and extra packages the user
-    /// added. The always-attested packages come first; Xposed managers are left out.
-    pub fn build(third_party: &[String], extra: &[String]) -> TargetList {
+    /// Builds the list from the installed packages and the settings. The Play stack comes
+    /// first and is always in the list; then the third-party packages, the installed wallet
+    /// applications (which are often system packages) and the extra packages, without the
+    /// excluded ones and without Xposed managers. Every target gets the mode of the settings.
+    pub fn build(installed: &[String], third_party: &[String], settings: &crate::Settings) -> TargetList {
         let mut targets = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        let mut add = |package: &str, mode: TargetMode, targets: &mut Vec<Target>| {
-            if !TargetList::EXPOSED.contains(&package) && seen.insert(package.to_string()) {
+        let mode = settings.target_mode;
+        for package in TargetList::ALWAYS {
+            if seen.insert(package) {
                 targets.push(Target { package: package.to_string(), mode });
             }
-        };
-        for package in TargetList::ALWAYS {
-            add(package, TargetMode::Auto, &mut targets);
         }
-        for package in third_party.iter().chain(extra.iter()) {
-            if TargetList::ALWAYS.contains(&package.as_str()) {
-                continue;
-            }
-            add(package, TargetMode::Auto, &mut targets);
-        }
-        for package in TargetList::WALLET {
-            if third_party.iter().any(|installed| installed == package) {
-                add(package, TargetMode::Auto, &mut targets);
+        let wallets = TargetList::WALLET.iter().filter(|wallet| installed.iter().any(|package| package == *wallet));
+        let candidates = third_party.iter().map(String::as_str).chain(wallets.copied()).chain(settings.extra_packages.iter().map(String::as_str));
+        for package in candidates {
+            let excluded = TargetList::EXPOSED.contains(&package) || settings.excluded_packages.iter().any(|excluded| excluded == package);
+            if !excluded && Target::is_package_name(package) && seen.insert(package) {
+                targets.push(Target { package: package.to_string(), mode });
             }
         }
         TargetList { targets }
@@ -98,9 +114,9 @@ impl TargetList {
     }
 
     /// Parses a `target.txt`, keeping package lines and dropping keybox sections (`[name.xml]`)
-    /// and comments.
+    /// and comments. A package listed twice keeps its first line.
     pub fn parse(text: &str) -> TargetList {
-        let mut targets = Vec::new();
+        let mut targets: Vec<Target> = Vec::new();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') || (line.starts_with('[') && line.ends_with(']')) {
@@ -113,7 +129,7 @@ impl TargetList {
             } else {
                 (line, TargetMode::Auto)
             };
-            if !package.is_empty() {
+            if !package.is_empty() && !targets.iter().any(|target| target.package == package) {
                 targets.push(Target { package: package.to_string(), mode });
             }
         }

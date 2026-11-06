@@ -114,3 +114,98 @@ the status list, for chains to the RSA root with subject `SERIALNUMBER=f92009e85
 no remote-provisioning (RKP) extension. The chain check mirrors this: it skips the validity-period
 check for exactly those chains, and enforces it for every other chain, including remotely
 provisioned ones, whose shorter validity is part of their threat model.
+
+## Permissions at launch
+
+The app must ask for what it needs while the user is there. Earlier versions read the status
+right away with a non-interactive privilege selection: the Shizuku binder had not arrived yet (it
+comes only once the app is in the foreground), its permission was never requested, and the app
+showed only that no privilege was available. The launch now follows TypeFace Droplet: it waits up
+to two seconds for the Shizuku binder, then selects the privilege with `interactive = true`, which
+asks for the Shizuku permission before falling back to `su` (whose first use opens the prompt of
+Magisk; KernelSU and APatch need the app to be allowed in their manager, which the setup text
+says). A refusal is remembered (`permissionDeclined`), because Shizuku keeps none, and asked again
+only when the user taps **Grant** or changes the privilege choice. Workers never ask: they select
+non-interactively and wait for the Shizuku binder after a boot.
+
+`PrivilegeSelector` and the privileges are the same classes as Droplet's, with two hardening
+changes: Shizuku can stop between two of its calls, so `status` turns a `RuntimeException` into
+"not running", and `bindUserService` failing resumes the connection with an error instead of
+leaving it waiting for the timeout. `ProcessRunner` bounds how long it waits for the output of a
+process that left a child holding its pipes.
+
+## Restricted root
+
+Running as uid 0 does not imply the capabilities of root: Magisk's "Restrict" policy drops them.
+The engine then could not read the files the app hands it (in the app's private directory) or
+end processes of other users, and every operation failed with a misleading I/O error. The engine
+checks `CAP_DAC_READ_SEARCH`, `CAP_KILL` and `CAP_SYS_PTRACE` (the ones it uses) before every
+command that changes the system and fails with kind `restricted`; `status` reports the missing
+ones instead of failing, so the home screen can explain the cause. The list is deliberately the
+capabilities actually used, not "all of them", so that a root manager that drops unrelated ones
+still works.
+
+## The boot hook
+
+Three defects of the earlier hook were fixed together:
+
+- It ran the engine from the app's native library directory. That path changes with every
+  update of the app (`/data/app/~~random/...`), so the hook silently stopped working after an
+  update. The hook now runs a copy of the engine in the store (`/data/adb/replay-integrity/replay`),
+  copied whenever the hook is installed; this is the approach of Droplet.
+- It ran without the user's settings, so the spoof overrides were replaced by the recommended
+  flags at every boot. `apply` now saves the settings it applied to the store (`settings.json`),
+  and `boot` applies those. A saved file that cannot be read is an error, not the defaults:
+  silently applying defaults would undo the user's choices.
+- It rebuilt `target.txt` before the framework starts, when `cmd package` does not work, and the
+  engine used an empty package list in that case, truncating the list to the Play stack. Now
+  `boot` keeps `target.txt` (`ApplyMode::EarlyBoot`), `PackageManager::installed` refuses a list
+  without the `android` package, and an `apply` whose package listing fails keeps the existing
+  file with a warning. The app's repair after boot rebuilds the list once the system runs.
+
+The hook also removes itself when the app is uninstalled: `boot --package` looks the package up
+in `/data/system/packages.list`, which the package manager rewrites as soon as a package is
+installed or removed and which is readable before the framework starts. A list that cannot be
+read counts as holding the package, so that the hook never removes itself only because it could
+not look. Two alternatives were rejected. Asking the package manager fails for the same reason
+the target list is kept: it does not run yet. Scanning `/data/app` for `<package>-*` (Droplet's
+method) misses applications on adopted storage, which is not mounted at that stage, so the hook
+would remove itself at every boot for them.
+
+## Settings
+
+The app keeps its settings as one JSON document (`Settings.Values`) rather than one preference
+per field, so that a change is written whole and fields can be added without migration code;
+unknown fields are ignored and unknown enum values fall back to defaults, so both newer and older
+versions read the document. Only the part the engine uses (`EngineSettings`: extra and excluded
+packages, target mode, spoof overrides) is passed with `--settings`; the engine rejects package
+names that are not package names, because they are written line by line into `target.txt`, and
+overrides of unknown flags. The app compares the settings it would apply with those the engine
+saved and shows "changes not applied yet" until they match.
+
+The fingerprint is kept in the store as it was downloaded, and the spoof flags are applied only
+to the `custom.pif.prop` the module reads. Earlier versions stored it with the flags, which made
+the stored copy depend on the settings of the moment. `status` reads the live `custom.pif.prop`
+too, so the app can show which flags another script (such as the module's `autopif`) rewrote.
+
+## Downloads
+
+The sources are settings, so the user is not tied to one mirror. Only HTTPS is accepted, also
+for redirects. A keybox may be served as XML or as base64 of it (the default mirror serves
+base64); anything else is refused before it reaches the engine. The certificate status list is
+cached for an hour; when it cannot be downloaded, a copy up to a week old is used, and without one
+the engine reports that revocation was not checked. A failed download never stops the apply:
+the installed files stay.
+
+Restarting the keystore ends the Play processes, so a refresh restarts only when an input changed
+or on the first apply, and only when the user allows restarts at all. The repair after boot does
+not restart the Play processes the system has just started; it restarts the keystore daemon only
+when it removed stale keys that the running daemon may still hold.
+
+## Information the app does not take from the engine
+
+The device's own model, Android version, security patch and build fingerprint come from
+`android.os.Build` in the app, which Play Integrity Fork does not spoof there. The first API level
+comes from the engine (`ro.product.first_api_level` and its fallbacks), because the platform has
+no public API for it; reading the property by reflection from the app was rejected as relying on
+hidden APIs.
