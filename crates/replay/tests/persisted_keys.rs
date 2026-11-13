@@ -62,3 +62,20 @@ fn another_format_version_is_skipped() {
     // A truncated file is skipped, not a panic.
     assert!(PersistedKey::parse(std::path::Path::new("x.bin"), &bytes[..10]).is_none());
 }
+
+#[test]
+fn an_alias_in_modified_utf8_that_is_not_utf8_is_not_exact() {
+    let bytes = persisted_key(1, "plain-alias", &[b"leaf", b"signer"]);
+    assert!(PersistedKey::parse(std::path::Path::new("x.bin"), &bytes).unwrap().alias_exact);
+    // NUL is C0 80 in modified UTF-8; a character outside the BMP is a pair of surrogates.
+    for alias in [&b"a\xC0\x80b"[..], &b"\xED\xA0\xBD\xED\xB8\x80"[..]] {
+        let mut bytes = persisted_key(1, "", &[b"leaf", b"signer"]);
+        let tail = bytes.split_off(14);
+        bytes.truncate(12);
+        bytes.extend_from_slice(&(alias.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(alias);
+        bytes.extend_from_slice(&tail);
+        let key = PersistedKey::parse(std::path::Path::new("x.bin"), &bytes).unwrap();
+        assert!(!key.alias_exact, "{alias:?}");
+    }
+}

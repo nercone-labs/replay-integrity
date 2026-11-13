@@ -51,7 +51,126 @@ is a **repair** problem that no amount of refreshing fixes, and it is the one Al
 addressed. Replay Integrity reads each persisted key, finds the ones whose chain was signed by a
 key that is not in the current keybox, and deletes them; the daemon regenerates them against the
 current keybox the next time each app asks. This runs at every boot (through the root manager's
-boot scripts) and on a schedule, so the verdict does not drift.
+boot scripts) and on a schedule, so the verdict does not drift. Deleting the file alone is not
+enough when the device's own keystore holds a key under the same alias: see "Device keys under
+the alias of a stale key".
+
+## Device keys under the alias of a stale key
+
+### What was seen
+
+On a Pixel whose bootloader is locked with a custom AVB key (verified boot state `SelfSigned`,
+yellow), Play Integrity reached STRONG on 2026-11-06, yet RCS
+in Google Messages started working only a week later, right after the first reboot in five days.
+The device's keystore2 database (`/data/misc/keystore/persistent.sqlite`) showed:
+
+- a key of the Play Store, `integrity.api.key.alias` (the key of the Play Integrity API), made by
+  the device's TEE on 2026-11-06 at 17:17:12 and attested by its remotely provisioned chain with
+  `verifiedBootState = SelfSigned`; Replay Integrity was installed 26 seconds later;
+- Replay Integrity's log: "removed a stale persisted key of uid 10140 (integrity.api.key.alias)"
+  at 18:35 and 20:22 the same day (uid 10140 is the Play Store);
+- nine keys of Play services with attestation chains, made by the TEE on 2026-10-30 and 10-31,
+  before TEESimulator-RS was installed.
+
+The logs of the following week were gone, so it was not established that this is what kept RCS
+from working; Google Messages keeps no record of failed provisioning once it succeeds. The
+mechanism below is established from the source of TEESimulator-RS v6.0.1 and is a defect
+whatever caused the RCS delay.
+
+### Why removing the file is not enough
+
+TEESimulator-RS (`Keystore2Interceptor`) answers `getKeyEntry` for an alias with its own key
+when it has one. When it has none, the call goes on to keystore2, and the reply is patched
+afterwards only when `ConfigurationManager.shouldPatch(uid)` holds, which is the `Auto` and
+`Patch` modes. For a `Generate` target (`!`), the default of the Play stack, a key that the
+device's TEE made is returned **unpatched**, with the device's own root of trust: an unlocked or
+self-signed boot.
+
+Such a device key exists whenever the application made the key while TEESimulator-RS did not
+generate its keys: before the module was installed, before the package was a target, or while
+it was in `Auto` mode. As long as TEESimulator-RS has a key under that alias, it hides the device
+key. Removing the persisted file and restarting the daemon takes the hiding key away, and the
+application does not make a new key: it finds the device key under the same alias and uses it,
+until it happens to replace it. The repair turns "attested by an old keybox" into "attested as
+an unlocked device".
+
+### What the engine does now
+
+Each stale key is deleted through keystore2 itself, with its command-line client
+`keystore_cli_v2 delete --name=<alias>` run as the application that owns the key
+(`android::DeviceKeystore`). keystore2 names an application's key by the calling user and the
+alias (`Domain::APP`), so the client must run as that user; the engine is root, sets the user and
+the group (an application's group has the same number as its user, as Zygote sets it), and the
+standard library clears the supplementary groups. The client reads the alias with
+`GetSwitchValueASCII`, which gives an empty string for any alias that is not ASCII.
+
+The deletion is repeated until the client exits with `KEY_NOT_FOUND` (7), at most
+`Engine::STALE_KEY_DELETIONS` times. For a target, TEESimulator-RS answers the first deletion
+for its own key (it removes the key from memory and deletes the persisted file), and keystore2
+answers the next one for a device key under the alias. When the daemon does not run, as at the
+boot hook, keystore2 answers them all: keystore2 is in `class early_hal`, which starts at
+`late-fs`, before the hook, and the client asks for it without waiting. The engine then removes
+the file if it is still there. Both answers were checked on a device (TEESimulator-RS v6.0.1,
+Android 17).
+
+For a package that is no longer a target, TEESimulator-RS passes the deletion to keystore2
+without dropping its own key from memory, although it still serves that key to `getKeyEntry`;
+the key stays served until the daemon restarts, as before this change. `ApplyMode::Restart`
+restarts it, and so does the application after a repair that removed a key.
+
+- **TEESimulator-RS not active.** A device key is deleted only while TEESimulator-RS hides it.
+  When the module is not installed, is disabled or is being removed, or waits for the next boot
+  in `modules_update`, a device key under the alias is the application's own key, in use (a
+  banking application's enrolment, for example), and the persisted file is inert: the file alone
+  is removed. A module disabled since the last boot still runs until the next one; it is treated
+  as not active, which only gives up the deletion, never deletes a key in use.
+- **The keystore cannot delete the alias.** When the client fails (keystore2 cannot be reached
+  and the client exits with -1, a binder failure gives `SYSTEM_ERROR`, a policy denies it) or
+  the engine cannot run it as the application (it is not root, or lacks `CAP_SETUID` or
+  `CAP_SETGID`), the key is **kept** and counted in `ApplyReport::stale_keys_kept`, and the
+  status keeps reporting it as stale; every later `apply` tries again. Removing it would bring
+  the device key back, which is worse than a chain from an older keybox that may still be valid.
+  On a device where the deletion never works, the repair of such keys is given up rather than
+  made harmful. `CAP_SETUID` and `CAP_SETGID` are deliberately not in `Engine::CAPABILITIES`:
+  only this deletion needs them, and a refresh or a keybox installation must not be refused for
+  their lack.
+- **No client, or an alias the client cannot take.** AOSP installs `keystore_cli_v2` with
+  keystore2 (`keystore2_defaults` requires it), but a device maker can leave it out. When it is
+  missing, or the alias was not read exactly (`PersistedKey::alias_exact`: the file holds
+  modified UTF-8 that is not UTF-8, so the alias read names another key), or the alias is not
+  ASCII, the file alone is removed, as before, with a warning. That is the only repair possible
+  there, and keeping a stale key forever would be worse.
+
+Only the alias of a key that is being removed is deleted. While TEESimulator-RS has a key under
+an alias, it hides the device key for `getKeyEntry` and for operations alike, so the application
+loses nothing it was using. Device keys of `Generate` targets that no persisted key hides (the
+keys of Play services from before the module) are left alone: they are served unpatched too, but
+nothing tells which of them matter for attestation, and deleting a key such as a Google Pay key
+would lose the application's data.
+
+An application that makes its key again while the deletions run (between two of them, or before
+the file is removed) loses that new key and makes another one; the bound on the deletions keeps
+this from repeating. The race of the file removal existed before this change.
+
+### Alternatives that were set aside
+
+- **Editing keystore2's database.** keystore2 owns it while it runs, and its rows refer to key
+  blobs that its own garbage collection deletes from KeyMint. A root process writing it
+  underneath is unsafe.
+- **A helper that runs `AndroidKeyStore` as the owner through `app_process`.** It would also take
+  aliases that are not ASCII, but outside an application the provider is not installed, and
+  installing it uses hidden APIs; `keystore_cli_v2` is the client AOSP provides.
+- **Patching device keys for `Generate` targets, or switching the Play stack to `Auto`.** The
+  first is a change to TEESimulator-RS, not something its configuration can express; the second
+  undoes the reason the Play stack generates its keys (see "What went wrong in Replay
+  Integrity").
+- **Deleting through the keystore only after a daemon restart.** It would reach keystore2 in a
+  single deletion, but it would not work in `NoRestart` mode, and an application that makes its
+  key between the restart and the deletion would lose it all the same. Deleting until
+  `KEY_NOT_FOUND` works whether or not the daemon runs.
+- **Removing the file when the deletion keeps failing**, after some number of attempts. It
+  would turn a failure to repair into the harm this change prevents; the status already shows
+  the stale keys, so the user can see that the repair does not complete.
 
 ## Keyboxes as mirrors serve them
 

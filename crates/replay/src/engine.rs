@@ -1,4 +1,4 @@
-use android::{ActivityManager, Capability, PackageList, PackageManager, ProcessCapabilities};
+use android::{ActivityManager, Capability, DeviceKeystore, KeyDeletion, PackageList, PackageManager, ProcessCapabilities};
 use der::Time;
 use keybox::KeyboxDocument;
 use serde::Serialize;
@@ -50,6 +50,9 @@ pub struct ApplyReport {
     pub spoof: Vec<(String, bool)>,
     /// The persisted keys removed because their chains were signed by a key no longer present.
     pub stale_keys_removed: usize,
+    /// The stale persisted keys kept because the keystore could not delete their alias; the
+    /// next `apply` tries again (`Engine::remove_stale_keys`).
+    pub stale_keys_kept: usize,
     /// Whether the installed keybox was not well-formed and was written again (`Engine::repair_keybox`).
     pub keybox_repaired: bool,
     pub daemon_restarted: bool,
@@ -147,6 +150,11 @@ impl Engine {
         // `/proc` may be mounted with `hidepid`; the processes of other users are found with it.
         Capability::SYS_PTRACE,
     ];
+
+    /// How many keys under the alias of a stale key the keystore deletes at most, before it
+    /// finds none. The key of TEESimulator-RS and a key of the device's keystore make two; the
+    /// rest allows for an application that makes its key again in the meantime.
+    pub const STALE_KEY_DELETIONS: usize = 4;
 
     /// The properties that hold the API level the device launched with, in order of preference.
     pub const FIRST_API_LEVEL_PROPERTIES: [&'static str; 3] = ["ro.product.first_api_level", "ro.board.first_api_level", "ro.board.api_level"];
@@ -394,15 +402,106 @@ impl Engine {
         Ok(self.persisted_keys()?.into_iter().filter(|key| key.is_stale(&signers)).collect())
     }
 
-    /// Removes the stale persisted keys. The keystore daemon regenerates a key an application
-    /// asks for again, with the current keybox, so removing them is safe. Returns how many.
-    pub fn remove_stale_keys(&mut self) -> Result<usize, ReplayError> {
-        let stale = self.stale_keys()?;
-        for key in &stale {
-            Files::remove(&key.path)?;
-            self.log.info(format!("removed a stale persisted key of uid {} ({})", key.uid, key.alias));
+    /// Removes the stale persisted keys, so that each application makes its key again, attested
+    /// with the current keybox. Returns how many were removed and how many were kept.
+    ///
+    /// A key is deleted through the keystore, as the application that owns it, until the
+    /// keystore has no key under its alias: TEESimulator-RS answers for its own key, and the
+    /// device's keystore for a key of its own under the same alias. Such a device key is left
+    /// over from a time when TEESimulator-RS did not generate the application's keys (it was not
+    /// a target, or not in `Generate` mode). Removing only the persisted file would make it the
+    /// application's key again, and TEESimulator-RS serves it unpatched to a `Generate` target,
+    /// with the device's own root of trust: an unlocked or self-signed boot fails attestation
+    /// until the application happens to make a new key.
+    ///
+    /// Only a key that TEESimulator-RS hides is deleted: while its module is not active, a
+    /// device key under the alias is the application's own key, in use, and the persisted file
+    /// is inert, so the file alone is removed. When the keystore cannot delete the alias (the
+    /// client fails, keystore2 cannot be reached, the engine cannot run the client as the
+    /// application), the key is kept for the next `apply`, and the status keeps reporting it as
+    /// stale. When the device has no keystore client, or the alias cannot be given to it exactly,
+    /// the file alone is removed, as the only repair possible, and a warning says so.
+    pub fn remove_stale_keys(&mut self) -> Result<(usize, usize), ReplayError> {
+        let keystore = DeviceKeystore::new(self.layout.keystore_client());
+        let mut removed = 0;
+        let mut kept = 0;
+        for key in self.stale_keys()? {
+            if self.remove_stale_key(&keystore, &key)? {
+                removed += 1;
+            } else {
+                kept += 1;
+            }
         }
-        Ok(stale.len())
+        Ok((removed, kept))
+    }
+
+    /// Removes one stale persisted key (see `Engine::remove_stale_keys`). Returns whether it was
+    /// removed.
+    fn remove_stale_key(&mut self, keystore: &DeviceKeystore, key: &PersistedKey) -> Result<bool, ReplayError> {
+        let name = format!("uid {} ({})", key.uid, key.alias);
+        // A module that waits for the next boot in `modules_update` does not run yet.
+        let hiding = Module::read(&self.layout, Component::Keystore.module_id()).is_some_and(|module| module.installed && module.is_active());
+        if !hiding {
+            Files::remove(&key.path)?;
+            self.log.info(format!(
+                "removed a stale persisted key of {name}; {} is not active, so a key of the device's keystore under that alias is the application's own and is left alone",
+                Component::Keystore.module_name()
+            ));
+            return Ok(true);
+        }
+        let unreachable = if !keystore.is_available() {
+            Some(format!("{} does not exist", self.layout.device_path(&keystore.client).display()))
+        } else if !key.alias_exact {
+            Some("its alias cannot be read exactly".to_string())
+        } else if !key.alias.is_ascii() {
+            // The client reads the alias with `GetSwitchValueASCII`, which gives an empty
+            // string for any other text.
+            Some("the keystore client takes only ASCII aliases".to_string())
+        } else {
+            None
+        };
+        if let Some(reason) = unreachable {
+            Files::remove(&key.path)?;
+            self.log.warning(format!(
+                "removed a stale persisted key of {name}; {reason}, so a key of the device's keystore under that alias, if there is one, is not deleted and becomes the application's key"
+            ));
+            return Ok(true);
+        }
+        let mut deleted = 0;
+        let mut cleared = false;
+        while deleted < Engine::STALE_KEY_DELETIONS {
+            // An application's group is its user: Android gives each one a group of the same
+            // number.
+            match keystore.delete(key.uid, key.uid, &key.alias) {
+                Ok(KeyDeletion::Deleted) => deleted += 1,
+                Ok(KeyDeletion::NotFound) => {
+                    cleared = true;
+                    break;
+                }
+                Err(error) if deleted == 0 => {
+                    self.log.warning(format!("kept a stale persisted key of {name} for a later repair: the keystore cannot delete it: {error}"));
+                    return Ok(false);
+                }
+                // TEESimulator-RS has already deleted its key and the file with it: there is no
+                // stale key left to keep, only a device key that may now be the application's.
+                Err(error) => {
+                    Files::remove(&key.path)?;
+                    self.log.warning(format!(
+                        "removed a stale persisted key of {name}, but the keystore failed after deleting {deleted} key(s) under that alias, so a key of the device's keystore under it may remain and become the application's key: {error}"
+                    ));
+                    return Ok(true);
+                }
+            }
+        }
+        Files::remove(&key.path)?;
+        if cleared {
+            self.log.info(format!("removed a stale persisted key of {name}: the keystore deleted {deleted} key(s) under that alias"));
+        } else {
+            self.log.warning(format!(
+                "removed a stale persisted key of {name}: the keystore deleted {deleted} key(s) under that alias without running out of them; the application seems to make its key again"
+            ));
+        }
+        Ok(true)
     }
 
     /// Restarts the keystore daemon so it reloads the keybox and the persisted keys, then asks
@@ -481,7 +580,7 @@ impl Engine {
                 false
             }
         };
-        let stale_keys_removed = self.remove_stale_keys()?;
+        let (stale_keys_removed, stale_keys_kept) = self.remove_stale_keys()?;
         let daemon_restarted = if mode == ApplyMode::Restart { self.restart()? } else { false };
         self.update_state(|state| state.applied_at = Some(Log::now()))?;
         Ok(ApplyReport {
@@ -490,6 +589,7 @@ impl Engine {
             security_patch,
             spoof: spoof.values.iter().map(|(flag, value)| (flag.key().to_string(), *value)).collect(),
             stale_keys_removed,
+            stale_keys_kept,
             keybox_repaired,
             daemon_restarted,
         })

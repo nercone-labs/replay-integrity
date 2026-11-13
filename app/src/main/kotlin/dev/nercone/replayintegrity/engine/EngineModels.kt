@@ -317,6 +317,8 @@ data class ApplyReport(
     val securityPatch: String? = null,
     val spoof: List<List<JsonElement>> = emptyList(),
     val staleKeysRemoved: Int = 0,
+    /** Stale keys kept because the keystore could not delete them yet; the next repair tries again. */
+    val staleKeysKept: Int = 0,
     /** Whether the installed keybox was not well-formed and was written again. */
     val keyboxRepaired: Boolean = false,
     val daemonRestarted: Boolean = false,

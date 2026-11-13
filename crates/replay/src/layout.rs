@@ -49,6 +49,11 @@ impl Layout {
         self.path(android::PackageList::PATH)
     }
 
+    /// The command-line client of the device's keystore.
+    pub fn keystore_client(&self) -> PathBuf {
+        self.path(android::DeviceKeystore::CLIENT)
+    }
+
     /// The path of `path` as the device sees it, for messages and reports.
     pub fn device_path(&self, path: &Path) -> PathBuf {
         match path.strip_prefix(&self.root) {
