@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -61,10 +62,23 @@ impl SystemCommand {
     /// needed to drain them: callers may change their mount namespace afterwards, which the
     /// kernel only allows in a single-threaded process.
     pub fn output(program: &str, arguments: &[&str]) -> Result<CommandOutput, CommandError> {
+        SystemCommand::output_of(Command::new(program), program, arguments)
+    }
+
+    /// Runs `program` like `SystemCommand::output`, as the user `uid` and the group `gid`.
+    /// Only root may run a program as another user; when root does, the standard library also
+    /// clears the supplementary groups, so the program has the rights of that user alone.
+    pub fn output_as(uid: u32, gid: u32, program: &str, arguments: &[&str]) -> Result<CommandOutput, CommandError> {
+        let mut command = Command::new(program);
+        command.uid(uid).gid(gid);
+        SystemCommand::output_of(command, program, arguments)
+    }
+
+    fn output_of(mut command: Command, program: &str, arguments: &[&str]) -> Result<CommandOutput, CommandError> {
         let spawn = |source| CommandError::Spawn { program: program.to_string(), source };
         let mut stdout = SystemCommand::scratch_file().map_err(spawn)?;
         let mut stderr = SystemCommand::scratch_file().map_err(spawn)?;
-        let mut child = Command::new(program)
+        let mut child = command
             .args(arguments)
             .stdin(Stdio::null())
             .stdout(stdout.try_clone().map_err(spawn)?)

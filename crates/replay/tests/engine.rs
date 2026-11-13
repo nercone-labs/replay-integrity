@@ -12,8 +12,12 @@ use replay::{
 
 const TEST_KEYBOX: &str = include_str!("../../keybox/tests/fixtures/test-keybox.xml");
 
+/// A new root directory. Tests run at once, and the clock alone may give two of them the same
+/// time, so a counter tells them apart.
 fn temporary_root() -> PathBuf {
-    let base = std::env::temp_dir().join(format!("replay-test-{}-{}", std::process::id(), nanos()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let count = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("replay-test-{}-{}-{count}", std::process::id(), nanos()));
     fs::create_dir_all(base.join("data/adb/tricky_store")).unwrap();
     base
 }
@@ -649,5 +653,127 @@ fn stopping_a_watcher_waits_until_it_has_ended() {
     // Right after `stop`, no watcher is listed, so one can be started at once.
     assert_eq!(watcher.running(), None);
     let _ = child.wait();
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A persisted key of TEESimulator-RS (format version 3 of `GeneratedKeyPersistence.save`)
+/// whose alias is the raw `alias` bytes (`writeUTF`) and whose chain is signed by `signer`.
+fn persisted_key(uid: u32, alias: &[u8], signer: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let int = |bytes: &mut Vec<u8>, value: i32| bytes.extend_from_slice(&value.to_be_bytes());
+    int(&mut bytes, 3);
+    int(&mut bytes, 1);
+    int(&mut bytes, uid as i32);
+    bytes.extend_from_slice(&(alias.len() as u16).to_be_bytes());
+    bytes.extend_from_slice(alias);
+    bytes.extend_from_slice(&0u64.to_be_bytes());
+    bytes.push(0);
+    for value in [3, 256, 1, 0, 0, 0] {
+        int(&mut bytes, value);
+    }
+    let chain: [&[u8]; 3] = [b"leaf", signer, b"root"];
+    int(&mut bytes, chain.len() as i32);
+    for certificate in chain {
+        int(&mut bytes, certificate.len() as i32);
+        bytes.extend_from_slice(certificate);
+    }
+    bytes
+}
+
+/// A root with TEESimulator-RS installed, the test keybox, and one persisted key signed by a
+/// key not in it.
+fn root_with_a_stale_key(alias: &[u8]) -> (PathBuf, Layout, PathBuf) {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    write_module(&layout.modules().join("tricky_store"), "TEESimulator-RS");
+    fs::write(layout.tricky_store().join("keybox.xml"), TEST_KEYBOX).unwrap();
+    let directory = layout.tricky_store().join("persistent_keys");
+    fs::create_dir_all(&directory).unwrap();
+    let key = directory.join("stale.bin");
+    fs::write(&key, persisted_key(10_140, alias, b"an old attestation key")).unwrap();
+    (root, layout, key)
+}
+
+/// A keystore client at the device path of `layout` that exits with `status`.
+fn keystore_client(layout: &Layout, status: u8) {
+    let client = layout.keystore_client();
+    fs::create_dir_all(client.parent().unwrap()).unwrap();
+    fs::write(&client, format!("#!/bin/sh\nexit {status}\n")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&client, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_stale_key_is_kept_while_the_keystore_cannot_delete_its_alias() {
+    // The client exits with -1 when it cannot reach keystore2. Run by a test that is not root,
+    // the engine cannot even start it as the application, which must keep the key as well.
+    let (root, layout, key) = root_with_a_stale_key(b"integrity.api.key.alias");
+    keystore_client(&layout, 255);
+    let mut engine = Engine::new(layout.clone());
+    assert_eq!(engine.stale_keys().unwrap().len(), 1);
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (0, 1));
+    assert!(key.exists(), "a key of the device's keystore under that alias would become the application's key");
+    assert_eq!(engine.stale_keys().unwrap().len(), 1);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_stale_key_is_removed_without_a_keystore_client() {
+    let (root, layout, key) = root_with_a_stale_key(b"integrity.api.key.alias");
+    let mut engine = Engine::new(layout.clone());
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
+    assert!(!key.exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_alias_that_is_not_read_exactly_is_not_given_to_the_keystore() {
+    // Modified UTF-8 encodes NUL as C0 80, which is not UTF-8: the alias read is not the key's.
+    let (root, layout, key) = root_with_a_stale_key(b"key\xC0\x80name");
+    // A client that would keep the key if it were asked.
+    keystore_client(&layout, 4);
+    let mut engine = Engine::new(layout.clone());
+    let stale = engine.stale_keys().unwrap();
+    assert!(!stale[0].alias_exact);
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
+    assert!(!key.exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_device_key_is_left_alone_while_teesimulator_is_not_active() {
+    // Without the module, or with it disabled, a device key under the alias is the
+    // application's own key in use: the keystore is not asked, and the inert file is removed.
+    for disable in [false, true] {
+        let (root, layout, key) = root_with_a_stale_key(b"integrity.api.key.alias");
+        let module = layout.modules().join("tricky_store");
+        if disable {
+            fs::write(module.join("disable"), "").unwrap();
+        } else {
+            fs::remove_dir_all(&module).unwrap();
+        }
+        // A client that would keep the key if it were asked.
+        keystore_client(&layout, 4);
+        let mut engine = Engine::new(layout.clone());
+        let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+        assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0), "disable={disable}");
+        assert!(!key.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[test]
+fn an_alias_that_is_not_ascii_is_not_given_to_the_keystore() {
+    // keystore_cli_v2 reads the alias with GetSwitchValueASCII, which makes any other alias
+    // an empty one.
+    let (root, layout, key) = root_with_a_stale_key("鍵".as_bytes());
+    keystore_client(&layout, 4);
+    let mut engine = Engine::new(layout.clone());
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
+    assert!(!key.exists());
     let _ = fs::remove_dir_all(&root);
 }

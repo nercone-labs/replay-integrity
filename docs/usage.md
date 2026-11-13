@@ -34,7 +34,12 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
 - The **verdict** at the top: ready for STRONG, needs attention, not set up, or why the app cannot
   act (no root, restricted root).
 - **Refresh** downloads fresh inputs and applies them. **Repair** re-applies everything and removes
-  stale keys without downloading.
+  stale keys without downloading. A stale key is deleted through the keystore, as the app that owns
+  it, together with a key of the device's own keystore under the same name: an app could otherwise
+  pick up that older key, which reports the device's real (unlocked or self-signed) boot state,
+  until it happens to make a new one. This is done only while TEESimulator-RS is active; without
+  it, that older key is the app's own and is left alone. When the keystore cannot delete the key,
+  it is kept, still shown as made with an old keybox, and the next repair tries again.
 - The **checklist**: both modules, Zygisk, the keybox (a usable EC key, revocation, expiry, and
   whether the keystore can read the file), the fingerprint (model, patch, expiry), the spoof flags (and whether another script
   rewrote them), the per-app keys (how many were made with an old keybox), the keystore daemon,

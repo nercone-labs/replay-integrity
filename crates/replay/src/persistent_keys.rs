@@ -21,6 +21,12 @@ pub struct PersistedKey {
     pub path: PathBuf,
     pub uid: u32,
     pub alias: String,
+    /// Whether `alias` is the alias exactly. It is not when the file holds characters that
+    /// modified UTF-8 encodes differently from UTF-8 (NUL, or characters outside the Basic
+    /// Multilingual Plane), which are then replaced by U+FFFD: such an alias names another
+    /// key, so it must not be given to the keystore.
+    #[serde(skip)]
+    pub alias_exact: bool,
     /// The encoded certificates, from the generated key to the root.
     #[serde(skip)]
     pub chain: Vec<Vec<u8>>,
@@ -49,7 +55,7 @@ impl PersistedKey {
         }
         input.int()?;
         let uid = u32::try_from(input.int()?).ok()?;
-        let alias = input.utf()?;
+        let (alias, alias_exact) = input.utf()?;
         input.skip(8 + 1 + 4 + 4 + 4)?;
         for _ in 0..2 {
             let count = input.bounded(PersistedKey::MAX_LIST)?;
@@ -63,7 +69,7 @@ impl PersistedKey {
             let length = input.bounded(PersistedKey::MAX_CERTIFICATE)?;
             chain.push(input.take(length)?.to_vec());
         }
-        Some(PersistedKey { path: path.to_path_buf(), uid, alias, chain })
+        Some(PersistedKey { path: path.to_path_buf(), uid, alias, alias_exact, chain })
     }
 
     /// Every persisted key of `directory` that can be read. Files of another format are left
@@ -133,9 +139,15 @@ impl<'a> Input<'a> {
 
     /// A string of `DataOutputStream.writeUTF`: a 16-bit length and modified UTF-8, which
     /// equals UTF-8 for the characters of key aliases (it differs only for NUL and for
-    /// characters outside the Basic Multilingual Plane).
-    fn utf(&mut self) -> Option<String> {
+    /// characters outside the Basic Multilingual Plane, whose encodings are not valid UTF-8).
+    /// Returns the string and whether it was read exactly; when it was not, the bytes that
+    /// are not UTF-8 are replaced by U+FFFD.
+    fn utf(&mut self) -> Option<(String, bool)> {
         let length = self.take(2).map(|bytes| usize::from(u16::from_be_bytes([bytes[0], bytes[1]])))?;
-        Some(String::from_utf8_lossy(self.take(length)?).into_owned())
+        let bytes = self.take(length)?;
+        Some(match std::str::from_utf8(bytes) {
+            Ok(text) => (text.to_string(), true),
+            Err(_) => (String::from_utf8_lossy(bytes).into_owned(), false),
+        })
     }
 }
