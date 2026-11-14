@@ -2,12 +2,12 @@
 //! device is needed. The keybox fixture holds throwaway keys generated for the tests.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use keybox::KeyboxDocument;
 use replay::{
-    ApplyMode, BootHook, BootReport, Conflicts, Engine, Files, Fingerprint, FingerprintProblem, KeyboxPolicy, Layout, Log, Module, PackageWatcher, PatchDate,
-    Settings, SpoofFlag, SpoofFlags, Target, TargetList, TargetMode, WatchReport,
+    ApplyMode, BootHook, BootReport, Conflicts, Engine, Files, Fingerprint, FingerprintProblem, KeyboxPolicy, KeystoreConfig, Layout, Log, Module,
+    PackageWatcher, PatchDate, PersistedKey, Settings, SpoofFlag, SpoofFlags, Target, TargetList, TargetMode, WatchReport,
 };
 
 const TEST_KEYBOX: &str = include_str!("../../keybox/tests/fixtures/test-keybox.xml");
@@ -659,6 +659,11 @@ fn stopping_a_watcher_waits_until_it_has_ended() {
 /// A persisted key of TEESimulator-RS (format version 3 of `GeneratedKeyPersistence.save`)
 /// whose alias is the raw `alias` bytes (`writeUTF`) and whose chain is signed by `signer`.
 fn persisted_key(uid: u32, alias: &[u8], signer: &[u8]) -> Vec<u8> {
+    attested_key(uid, alias, b"leaf", signer)
+}
+
+/// Like `persisted_key`, with `leaf` as the certificate of the key.
+fn attested_key(uid: u32, alias: &[u8], leaf: &[u8], signer: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let int = |bytes: &mut Vec<u8>, value: i32| bytes.extend_from_slice(&value.to_be_bytes());
     int(&mut bytes, 3);
@@ -671,7 +676,7 @@ fn persisted_key(uid: u32, alias: &[u8], signer: &[u8]) -> Vec<u8> {
     for value in [3, 256, 1, 0, 0, 0] {
         int(&mut bytes, value);
     }
-    let chain: [&[u8]; 3] = [b"leaf", signer, b"root"];
+    let chain: [&[u8]; 3] = [leaf, signer, b"root"];
     int(&mut bytes, chain.len() as i32);
     for certificate in chain {
         int(&mut bytes, certificate.len() as i32);
@@ -776,4 +781,156 @@ fn an_alias_that_is_not_ascii_is_not_given_to_the_keystore() {
     assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
     assert!(!key.exists());
     let _ = fs::remove_dir_all(&root);
+}
+
+/// Certificates in the layout of the keys that TEESimulator-RS generates, attesting the patch
+/// 2026-10-05: one for Google Play services and one for another application. They are built
+/// by `fixtures/attested-keys.py` from the schema of the attestation extension, self-signed with
+/// throwaway keys, not captured from a device.
+const PLAY_KEY_2026_10_05: &[u8] = include_bytes!("fixtures/play-key-2026-10-05.der");
+const PLAY_STORE_KEY_2026_10_05: &[u8] = include_bytes!("fixtures/play-store-key-2026-10-05.der");
+/// A key of Google Play services that reports the OS patch level only, not the vendor and boot ones.
+const PLAY_KEY_2026_10: &[u8] = include_bytes!("fixtures/play-key-2026-10.der");
+const APP_KEY_2026_10_05: &[u8] = include_bytes!("fixtures/app-key-2026-10-05.der");
+const INTEGRITY: &str = "integrity.api.key.alias";
+
+/// The contents of `security_patch.txt` that the engine writes for `date`.
+fn security_patch(date: &str) -> String {
+    KeystoreConfig::security_patch_contents(PatchDate::parse(date).unwrap())
+}
+
+/// A root with TEESimulator-RS installed, the test keybox (none without `keybox`),
+/// `security_patch` as `security_patch.txt` (none for `None`), and one persisted key for each
+/// certificate and alias of `keys`, signed by the keybox. Returns the paths of the keys, in order.
+fn root_with_attested_keys(keybox: bool, security_patch: Option<&str>, keys: &[(&[u8], &str)]) -> (PathBuf, Layout, Vec<PathBuf>) {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    write_module(&layout.modules().join("tricky_store"), "TEESimulator-RS");
+    if keybox {
+        fs::write(layout.tricky_store().join("keybox.xml"), TEST_KEYBOX).unwrap();
+    }
+    if let Some(contents) = security_patch {
+        fs::write(layout.tricky_store().join("security_patch.txt"), contents).unwrap();
+    }
+    let signer = key_material(TEST_KEYBOX)[0].1[0].clone();
+    let directory = layout.tricky_store().join("persistent_keys");
+    fs::create_dir_all(&directory).unwrap();
+    let mut paths = Vec::new();
+    for (index, (leaf, alias)) in keys.iter().enumerate() {
+        let path = directory.join(format!("{index}.bin"));
+        fs::write(&path, attested_key(10_100 + index as u32, alias.as_bytes(), leaf, &signer)).unwrap();
+        paths.push(path);
+    }
+    (root, layout, paths)
+}
+
+fn stale_paths(engine: &Engine) -> Vec<PathBuf> {
+    engine.stale_keys().unwrap().into_iter().map(|key| key.path).collect()
+}
+
+#[test]
+fn the_security_patch_file_is_read_back_only_in_the_form_the_engine_writes() {
+    let patch = PatchDate::parse("2026-11-05").unwrap();
+    let contents = KeystoreConfig::security_patch_contents(patch);
+    assert_eq!(KeystoreConfig::security_patch_of(&contents), Some(patch));
+    // Forms that TEESimulator-RS resolves by itself: the engine does not guess their levels.
+    for other in [
+        "2026-11-05\n",
+        "all=2026-11-05\n",
+        "system=prop\nvendor=prop\nboot=prop\n",
+        "system=no\nvendor=no\nboot=no\n",
+        "system=2026-11-05\nvendor=2026-11-01\nboot=2026-11-05\n",
+        "system=2026-11-05\r\nvendor=2026-11-05\r\nboot=2026-11-05\r\n",
+        "system=2026-11-05\nvendor=2026-11-05\nboot=2026-11-05\n[com.google.android.gms]\nall=2026-10-05\n",
+        "",
+    ] {
+        assert_eq!(KeystoreConfig::security_patch_of(other), None, "{other:?}");
+    }
+}
+
+#[test]
+fn an_attested_patch_differs_when_any_reported_level_differs() {
+    let read = |leaf: &[u8]| PersistedKey::parse(Path::new("x.bin"), &attested_key(10_100, b"k", leaf, b"signer")).unwrap().key_description().unwrap();
+    let full = read(PLAY_KEY_2026_10_05);
+    let date = |text: &str| PatchDate::parse(text).unwrap();
+    assert!(!date("2026-10-05").differs_from_attested(&full));
+    // Another month changes every level; another day of the month only vendor and boot.
+    assert!(date("2026-11-05").differs_from_attested(&full));
+    assert!(date("2026-10-01").differs_from_attested(&full));
+    // Levels that are not reported are not compared: only the month is.
+    let os_only = read(PLAY_KEY_2026_10);
+    assert!(!date("2026-10-01").differs_from_attested(&os_only));
+    assert!(date("2026-11-01").differs_from_attested(&os_only));
+    // A certificate without an attestation extension has no description to compare.
+    let plain = PersistedKey::parse(Path::new("x.bin"), &persisted_key(10_100, b"k", b"signer")).unwrap();
+    assert!(plain.key_description().is_none());
+}
+
+#[test]
+fn an_integrity_key_that_attests_another_patch_is_stale() {
+    let leaves: [(&[u8], &str); 5] = [
+        (PLAY_STORE_KEY_2026_10_05, INTEGRITY),
+        (PLAY_KEY_2026_10_05, INTEGRITY),
+        // Other keys keep the patch they were made with, as on a genuine device: another key of
+        // the Play stack (tap-and-pay, a passkey), and the key of another application, even
+        // under the alias of the integrity key.
+        (PLAY_KEY_2026_10_05, "tapandpay"),
+        (APP_KEY_2026_10_05, INTEGRITY),
+        (APP_KEY_2026_10_05, "enrolment"),
+    ];
+    for date in ["2026-11-05", "2026-10-01"] {
+        let (root, layout, keys) = root_with_attested_keys(true, Some(&security_patch(date)), &leaves);
+        let mut engine = Engine::new(layout.clone());
+        assert_eq!(stale_paths(&engine), keys[..2], "{date}");
+        let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+        assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (2, 0), "{date}");
+        assert!(!keys[0].exists() && !keys[1].exists(), "{date}");
+        assert!(keys[2..].iter().all(|key| key.exists()), "{date}");
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[test]
+fn apply_compares_the_keys_with_the_patch_of_the_installed_fingerprint() {
+    // The case seen with AlwaysStrong: the monthly patch moves with the fingerprint, the keybox
+    // stays, and the integrity key keeps attesting the previous patch.
+    let (root, layout, keys) = root_with_attested_keys(true, None, &[(PLAY_STORE_KEY_2026_10_05, INTEGRITY), (APP_KEY_2026_10_05, "enrolment")]);
+    let mut engine = Engine::new(layout.clone());
+    let text =
+        "FINGERPRINT=google/p/p:CANARY/A/1:user/release-keys\nMANUFACTURER=Google\nMODEL=Pixel\nBRAND=google\nPRODUCT=p\nDEVICE=p\nSECURITY_PATCH=2026-11-05\n";
+    engine.install_fingerprint(text.as_bytes(), None, &Settings::default()).unwrap();
+    // A module script writes the previous patch back: apply writes the fingerprint's again
+    // before it compares the keys.
+    fs::write(layout.tricky_store().join("security_patch.txt"), security_patch("2026-10-05")).unwrap();
+    assert!(stale_paths(&engine).is_empty());
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    assert_eq!(report.security_patch.as_deref(), Some("2026-11-05"));
+    assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
+    assert!(!keys[0].exists() && keys[1].exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_integrity_key_that_attests_the_configured_patch_is_kept() {
+    let (root, layout, keys) =
+        root_with_attested_keys(true, Some(&security_patch("2026-10-05")), &[(PLAY_KEY_2026_10_05, INTEGRITY), (PLAY_KEY_2026_10, INTEGRITY)]);
+    let mut engine = Engine::new(layout.clone());
+    assert!(stale_paths(&engine).is_empty());
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (0, 0));
+    assert!(keys.iter().all(|key| key.exists()));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn keys_are_not_judged_by_a_patch_the_engine_cannot_resolve() {
+    let newer = security_patch("2026-11-05");
+    let cases = [(true, Some("system=prop\nvendor=prop\nboot=prop\n")), (true, None), (false, Some(newer.as_str()))];
+    for (keybox, contents) in cases {
+        let (root, layout, keys) = root_with_attested_keys(keybox, contents, &[(PLAY_KEY_2026_10_05, INTEGRITY)]);
+        let engine = Engine::new(layout.clone());
+        assert!(stale_paths(&engine).is_empty(), "keybox={keybox} {contents:?}");
+        assert!(keys[0].exists());
+        let _ = fs::remove_dir_all(&root);
+    }
 }

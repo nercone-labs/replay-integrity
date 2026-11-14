@@ -1,5 +1,6 @@
 use std::fmt;
 
+use attestation::{AuthorizationList, KeyDescription};
 use der::Time;
 
 /// A security patch date, `YYYY-MM-DD`, as Android writes `ro.build.version.security_patch`.
@@ -35,6 +36,20 @@ impl PatchDate {
     /// The patch levels of the vendor and boot images in attestation, `YYYYMMDD`.
     pub fn long_patch_level(&self) -> u64 {
         self.os_patch_level() * 100 + u64::from(self.day)
+    }
+
+    /// Whether `description` attests a patch level other than this patch's: an OS, vendor or
+    /// boot patch level that differs from what this patch gives. Each level is taken from the
+    /// hardware-enforced list, or from the software-enforced list when the hardware-enforced
+    /// one does not report it; a level that neither reports is not compared.
+    pub fn differs_from_attested(&self, description: &KeyDescription) -> bool {
+        let attested = |field: fn(&AuthorizationList) -> Option<u64>| field(&description.hardware_enforced).or(field(&description.software_enforced));
+        let levels = [
+            (attested(|list| list.os_patch_level), self.os_patch_level()),
+            (attested(|list| list.vendor_patch_level), self.long_patch_level()),
+            (attested(|list| list.boot_patch_level), self.long_patch_level()),
+        ];
+        levels.iter().any(|(attested, expected)| attested.is_some_and(|attested| attested != *expected))
     }
 
     /// The start of the day, in seconds since the Unix epoch (UTC).

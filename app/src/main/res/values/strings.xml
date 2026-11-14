@@ -316,8 +316,8 @@
         <item quantity="other">%1$d stale keys removed.</item>
     </plurals>
     <plurals name="keys_stale">
-        <item quantity="one">%1$d of %2$d keys was made with an old keybox: Repair removes it</item>
-        <item quantity="other">%1$d of %2$d keys were made with an old keybox: Repair removes them</item>
+        <item quantity="one">%1$d of %2$d keys was made with an old keybox or security patch: Repair removes it</item>
+        <item quantity="other">%1$d of %2$d keys were made with an old keybox or security patch: Repair removes them</item>
     </plurals>
     <plurals name="keys_current">
         <item quantity="one">%1$d key, all made with the current keybox</item>

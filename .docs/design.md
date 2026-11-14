@@ -49,7 +49,8 @@ to the real cause.
 Causes 1–3 are refresh problems, solved by fetching fresh inputs and re-applying settings. Cause 4
 is a **repair** problem that no amount of refreshing fixes, and it is the one AlwaysStrong never
 addressed. Replay Integrity reads each persisted key, finds the ones whose chain was signed by a
-key that is not in the current keybox, and deletes them; the daemon regenerates them against the
+key that is not in the current keybox (and the key of the Play Integrity API when it attests
+another security patch: see "Persisted keys and the security patch"), and deletes them; the daemon regenerates them against the
 current keybox the next time each app asks. This runs at every boot (through the root manager's
 boot scripts) and on a schedule, so the verdict does not drift. Deleting the file alone is not
 enough when the device's own keystore holds a key under the same alias: see "Device keys under
@@ -171,6 +172,67 @@ this from repeating. The race of the file removal existed before this change.
 - **Removing the file when the deletion keeps failing**, after some number of attempts. It
   would turn a failure to repair into the harm this change prevents; the status already shows
   the stale keys, so the user can see that the repair does not complete.
+
+## Persisted keys and the security patch
+
+### What was seen
+
+AlwaysStrong, on a Pixel 9a spoofing a Pixel 6a, stopped reaching STRONG on the day a new monthly
+security patch came out. Its Action and its automatic refresh did not bring it back; reinstalling
+the module did. The trigger was the monthly patch; the keybox is not known to have changed. The
+explanation below comes from the source of TEESimulator-RS and AlwaysStrong; it was not
+reproduced on that device.
+
+### Why
+
+TEESimulator-RS writes the security patch levels in use at generation into the attestation
+extension of every key it generates (`osPatchLevel` as `YYYYMM`, `vendorPatchLevel` and
+`bootPatchLevel` as `YYYYMMDD`), and keeps that certificate in `persistent_keys/` with the key.
+When `security_patch.txt` changes, its `ConfigObserver` only reloads the patch configuration and
+leaves the generated keys and their chains as they are; a keybox change does not re-sign them
+either (cause 4), and only drops the chains of `Patch`-mode keys kept in memory. A key made before
+the change keeps attesting the previous patch, while the fingerprint written with the new patch
+makes Google Play services claim the new one. Reinstalling AlwaysStrong worked because its
+`uninstall.sh` deletes `persistent_keys/`; its Action writes the new patch but keeps the keys.
+Replay Integrity had the same gap: `stale_keys` compared only the signer of each chain.
+
+### What the engine does now
+
+`Engine::stale_keys` also counts as stale the key of the Play Integrity API when its attested OS,
+vendor or boot patch level differs from the configured patch. That key is one whose alias is in
+`Engine::INTEGRITY_KEY_ALIASES` (today `integrity.api.key.alias`, the key of the Play Store seen
+in "Device keys under the alias of a stale key") and whose `attestationApplicationId` names a
+package of the Play stack (`TargetList::ALWAYS`). The configured patch is read back from
+`security_patch.txt` with `KeystoreConfig::security_patch_of`, the inverse of
+`security_patch_contents`. `apply` writes the patch of the installed fingerprint before it looks
+for stale keys, so a refresh that brings a new patch removes the key in the same run, and the
+Play Store makes it again with the new patch.
+
+- **The integrity key only.** Google Play services holds other device-bound keys as well (tap-and-pay tokens, passkeys, Find Hub), and
+  whether they carry an attestation extension with an `attestationApplicationId` was not
+  established; if they do, every monthly patch would delete them and the user would have to
+  enrol cards or passkeys again. Other applications have the same concern (a banking
+  application's enrolment). A genuine device keeps the generation-time patch in a key's
+  certificate after an update too, so an older patch alone is no fault. The alias is the only key
+  known to serve Play Integrity; another alias is added to the list once it is seen to.
+- **Alias and package together.** Another application may use the same alias; the package of the
+  attestation keeps its key out. An alias that is not read exactly (`PersistedKey::alias_exact`)
+  is not compared.
+- **Only the form this engine writes is judged.** TEESimulator-RS also reads a single date,
+  `all=`, `prop`, `device_default`, `no`, date keywords and per-package sections, and resolves
+  some of them from the device. Reproducing that would mean guessing; any other contents leave the patch out
+  of the judgement, and only the signer is compared.
+- **A level the certificate does not report, or a certificate that cannot be read, is not
+  compared**: nothing shows that the key is wrong, and deleting it could only cost the user.
+
+### Alternatives that were set aside
+
+- **Deleting `persistent_keys/` when the patch changes**, as a reinstall does. It removes every
+  application's keys, including those whose enrolment would be lost.
+- **Comparing the patch for every target, or for every key of the Play stack.** See "The
+  integrity key only" above.
+- **Changing TEESimulator-RS to re-sign persisted chains when the patch changes.** That is a
+  change to the module, not something its configuration can express.
 
 ## Keyboxes as mirrors serve them
 

@@ -58,6 +58,16 @@ impl KeystoreConfig {
     pub fn security_patch_contents(patch: PatchDate) -> String {
         format!("system={patch}\nvendor={patch}\nboot={patch}\n")
     }
+
+    /// The patch of `contents` when it is exactly `security_patch_contents` of a patch: the
+    /// inverse of `security_patch_contents`. `None` for any other contents (per-package
+    /// sections, `prop`, keywords, components with different dates), whose patch levels
+    /// TEESimulator-RS resolves in ways this engine does not reproduce.
+    pub fn security_patch_of(contents: &str) -> Option<PatchDate> {
+        let first = contents.lines().next()?;
+        let patch = PatchDate::parse(first.strip_prefix("system=")?)?;
+        (contents == KeystoreConfig::security_patch_contents(patch)).then_some(patch)
+    }
 }
 
 /// The settings of the engine: what the user chose for the attestation targets and the spoof
