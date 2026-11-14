@@ -48,7 +48,7 @@ pub struct ApplyReport {
     pub targets_rebuilt: bool,
     pub security_patch: Option<String>,
     pub spoof: Vec<(String, bool)>,
-    /// The persisted keys removed because their chains were signed by a key no longer present.
+    /// The stale persisted keys removed (`Engine::stale_keys`).
     pub stale_keys_removed: usize,
     /// The stale persisted keys kept because the keystore could not delete their alias; the
     /// next `apply` tries again (`Engine::remove_stale_keys`).
@@ -114,7 +114,7 @@ pub struct StatusReport {
     pub targets: Option<TargetList>,
     /// The number of keys TEESimulator-RS persisted for applications.
     pub persisted_keys: usize,
-    /// The persisted keys whose chains were signed by a key not in the current keybox.
+    /// The stale persisted keys (`Engine::stale_keys`).
     pub stale_keys: Vec<PersistedKey>,
     pub daemon: DaemonState,
     pub boot_hook: BootHook,
@@ -155,6 +155,11 @@ impl Engine {
     /// finds none. The key of TEESimulator-RS and a key of the device's keystore make two; the
     /// rest allows for an application that makes its key again in the meantime.
     pub const STALE_KEY_DELETIONS: usize = 4;
+    /// The aliases of the keys of the Play stack that are known to serve the Play Integrity API:
+    /// the only keys that are stale for attesting another security patch (`Engine::stale_keys`).
+    /// `integrity.api.key.alias` is the key of the Play Integrity API, seen in the keystore2
+    /// database of a device as a key of the Play Store.
+    pub const INTEGRITY_KEY_ALIASES: [&'static str; 1] = ["integrity.api.key.alias"];
 
     /// The properties that hold the API level the device launched with, in order of preference.
     pub const FIRST_API_LEVEL_PROPERTIES: [&'static str; 3] = ["ro.product.first_api_level", "ro.board.first_api_level", "ro.board.api_level"];
@@ -390,20 +395,52 @@ impl Engine {
         PersistedKey::list(&self.layout.tricky_store().join(PersistedKey::DIRECTORY))
     }
 
-    /// The persisted keys whose chains were signed by a key that is not in the current keybox:
-    /// their attestation uses an old keybox and fails once it is revoked or expires. Without a
-    /// keybox, no key is stale: there is nothing to compare with.
+    /// The patch that `security_patch.txt` sets for every application, when the file is in the
+    /// form this engine writes (`KeystoreConfig::security_patch_of`). `None` when the file is
+    /// missing or cannot be read: the patch is then not compared, and the keys are still
+    /// compared by their signers.
+    fn configured_patch(&self) -> Option<PatchDate> {
+        let bytes = Files::read_optional(&self.config.security_patch()).ok()??;
+        std::str::from_utf8(&bytes).ok().and_then(KeystoreConfig::security_patch_of)
+    }
+
+    /// The persisted keys that are stale:
+    ///
+    /// - every key whose chain was signed by a key that is not in the current keybox: its
+    ///   attestation fails once the old keybox is revoked or expires;
+    /// - a key of the Play Integrity API (an alias of `Engine::INTEGRITY_KEY_ALIASES`, attested
+    ///   for a package of the Play stack, `TargetList::ALWAYS`) that attests a security patch
+    ///   other than the configured one (`configured_patch`): it contradicts the patch of the
+    ///   spoofed build.
+    ///
+    /// The patch is compared for those keys only. Another key may hold what the user enrolled
+    /// with it (a card for tap-and-pay, a passkey, a banking application's enrolment), which
+    /// deleting it on every monthly patch would lose; and a genuine device keeps the patch of a
+    /// key's generation in its certificate too, so an older patch alone is no fault.
+    ///
+    /// Without a keybox, no key is stale: there is nothing to compare with, and a key made again
+    /// would not be attested either.
     pub fn stale_keys(&self) -> Result<Vec<PersistedKey>, ReplayError> {
         let signers = self.keybox_signers()?;
         if signers.is_empty() {
             return Ok(Vec::new());
         }
         let signers: Vec<&[u8]> = signers.iter().map(Vec::as_slice).collect();
-        Ok(self.persisted_keys()?.into_iter().filter(|key| key.is_stale(&signers)).collect())
+        let patch = self.configured_patch();
+        let attests_other_patch = |key: &PersistedKey| -> bool {
+            if !key.alias_exact || !Engine::INTEGRITY_KEY_ALIASES.contains(&key.alias.as_str()) {
+                return false;
+            }
+            let (Some(patch), Some(description)) = (patch, key.key_description()) else { return false };
+            let lists = [&description.software_enforced, &description.hardware_enforced];
+            let is_play = lists.iter().flat_map(|list| &list.application_packages).any(|package| TargetList::ALWAYS.contains(&package.as_str()));
+            is_play && patch.differs_from_attested(&description)
+        };
+        Ok(self.persisted_keys()?.into_iter().filter(|key| key.is_signed_by_other(&signers) || attests_other_patch(key)).collect())
     }
 
-    /// Removes the stale persisted keys, so that each application makes its key again, attested
-    /// with the current keybox. Returns how many were removed and how many were kept.
+    /// Removes the stale persisted keys (`stale_keys`), so that each application makes its key
+    /// again, attested with the current keybox and patch. Returns how many were removed and how many were kept.
     ///
     /// A key is deleted through the keystore, as the application that owns it, until the
     /// keystore has no key under its alias: TEESimulator-RS answers for its own key, and the

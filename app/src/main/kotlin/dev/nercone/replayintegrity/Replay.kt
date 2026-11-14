@@ -172,7 +172,7 @@ class Replay(val context: Context) {
     /**
      * Re-applies the configuration without downloading anything: rebuild the target list,
      * re-apply the spoof flags and the security patch, and remove the stale persisted keys that
-     * keep an application on an old keybox. With `restart`, the keystore daemon and the Play
+     * keep an application on an old keybox, or the Play Integrity key on an old security patch. With `restart`, the keystore daemon and the Play
      * processes are restarted; otherwise only when stale keys were removed, which the running
      * daemon may still hold, and the settings allow restarts.
      */

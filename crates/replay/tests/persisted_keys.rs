@@ -48,9 +48,9 @@ fn a_key_is_stale_when_its_signer_is_not_a_current_keybox_certificate() {
     let bytes = persisted_key(10_001, "k", &[b"leaf", b"old-attestation-key", b"root"]);
     let key = PersistedKey::parse(std::path::Path::new("x.bin"), &bytes).unwrap();
     // Current keybox signs with "new-attestation-key": the key's old signer makes it stale.
-    assert!(key.is_stale(&[&b"new-attestation-key"[..]]));
+    assert!(key.is_signed_by_other(&[&b"new-attestation-key"[..]]));
     // When the current keybox still has that signer, the key is not stale.
-    assert!(!key.is_stale(&[&b"old-attestation-key"[..], &b"another"[..]]));
+    assert!(!key.is_signed_by_other(&[&b"old-attestation-key"[..], &b"another"[..]]));
 }
 
 #[test]

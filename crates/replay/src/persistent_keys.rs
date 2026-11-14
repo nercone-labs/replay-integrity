@@ -2,7 +2,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use attestation::KeyDescription;
 use serde::Serialize;
+use x509::Certificate;
 
 use crate::ReplayError;
 
@@ -14,6 +16,11 @@ use crate::ReplayError;
 /// keeps receiving the old chain: once the old keybox is revoked or expires, its attestation
 /// fails although a valid keybox is installed. Such keys are found here by comparing their
 /// chains with the keybox.
+///
+/// The certificate of a generated key also holds the security patch levels in use when the key
+/// was generated, and TEESimulator-RS keeps them when `security_patch.txt` changes. An
+/// application that reuses the key keeps attesting the old patch while the spoofed build claims
+/// the new one. The attestation extension of the key (`key_description`) shows these levels.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedKey {
@@ -105,8 +112,15 @@ impl PersistedKey {
 
     /// Whether the chain was signed by a key other than those whose certificates are
     /// `signers` (the first certificate of each key of the keybox).
-    pub fn is_stale(&self, signers: &[&[u8]]) -> bool {
+    pub fn is_signed_by_other(&self, signers: &[&[u8]]) -> bool {
         self.signer().is_some_and(|signer| !signers.contains(&signer))
+    }
+
+    /// The attestation extension of the certificate of the key. `None` when the key has no
+    /// certificate, the certificate has no attestation extension, or either cannot be read.
+    pub fn key_description(&self) -> Option<KeyDescription> {
+        let certificate = Certificate::parse(self.chain.first()?).ok()?;
+        KeyDescription::parse(&certificate.extension(KeyDescription::EXTENSION)?.value).ok()
     }
 }
 
