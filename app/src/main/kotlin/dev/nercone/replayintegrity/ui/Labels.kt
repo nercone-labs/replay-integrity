@@ -4,10 +4,15 @@ import android.text.format.DateUtils
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import dev.nercone.replayintegrity.R
+import dev.nercone.replayintegrity.config.Protection
+import dev.nercone.replayintegrity.config.Settings
 import dev.nercone.replayintegrity.engine.Component
+import dev.nercone.replayintegrity.engine.KeyCategory
+import dev.nercone.replayintegrity.engine.KeyRemoval
 import dev.nercone.replayintegrity.engine.Problem
 import dev.nercone.replayintegrity.engine.RootManager
 import dev.nercone.replayintegrity.engine.TargetMode
+import dev.nercone.replayintegrity.engine.TargetScope
 import dev.nercone.replayintegrity.privilege.Privilege
 import dev.nercone.replayintegrity.privilege.PrivilegeStatus
 import java.text.DateFormat
@@ -68,6 +73,59 @@ object Labels {
             TargetMode.AUTO -> R.string.target_mode_auto
             TargetMode.GENERATE -> R.string.target_mode_generate
             TargetMode.PATCH -> R.string.target_mode_patch
+        },
+    )
+
+    @Composable
+    fun targetScope(scope: TargetScope): String = stringResource(
+        when (scope) {
+            TargetScope.PLAY -> R.string.target_scope_play
+            TargetScope.PLAY_AND_WALLETS -> R.string.target_scope_wallets
+            TargetScope.ALL_APPLICATIONS -> R.string.target_scope_all
+        },
+    )
+
+    @Composable
+    fun keyRemoval(removal: KeyRemoval): String = stringResource(
+        when (removal) {
+            KeyRemoval.NEVER -> R.string.key_removal_never
+            KeyRemoval.WHEN_UNUSABLE -> R.string.key_removal_when_unusable
+            KeyRemoval.WHEN_REPLACED -> R.string.key_removal_when_replaced
+        },
+    )
+
+    @Composable
+    fun keyCategory(category: KeyCategory): String = stringResource(
+        when (category) {
+            KeyCategory.INTEGRITY -> R.string.key_category_integrity
+            KeyCategory.PLAY -> R.string.key_category_play
+            KeyCategory.APPLICATION -> R.string.key_category_application
+        },
+    )
+
+    @Composable
+    fun keyboxReplacement(replacement: Settings.KeyboxReplacement): String = stringResource(
+        when (replacement) {
+            Settings.KeyboxReplacement.WHEN_NEEDED -> R.string.keybox_replacement_when_needed
+            Settings.KeyboxReplacement.NO_DOWNGRADE -> R.string.keybox_replacement_no_downgrade
+        },
+    )
+
+    @Composable
+    fun protection(protection: Protection): String = stringResource(
+        when (protection) {
+            Protection.SAFETY -> R.string.protection_safety
+            Protection.BALANCED -> R.string.protection_balanced
+            Protection.INTEGRITY -> R.string.protection_integrity
+        },
+    )
+
+    @Composable
+    fun protectionHelp(protection: Protection): String = stringResource(
+        when (protection) {
+            Protection.SAFETY -> R.string.protection_safety_help
+            Protection.BALANCED -> R.string.protection_balanced_help
+            Protection.INTEGRITY -> R.string.protection_integrity_help
         },
     )
 

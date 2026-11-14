@@ -29,7 +29,8 @@ pub struct State {
 
 /// The directory of the engine, `/data/adb/replay-integrity`, readable by root only:
 /// `state.json`, the settings applied last (`settings.json`), the installed fingerprint
-/// (`fingerprint.prop`), the keybox replaced last (`previous-keybox.xml`), the log, the copy
+/// (`fingerprint.prop`), the keybox replaced last (`previous-keybox.xml`), the certificate
+/// status list applied last (`status.json`), the log, the copy
 /// of the engine that the boot hook runs (`replay`), and the lock of the package watcher
 /// (`watch.lock`).
 pub struct Store {
@@ -43,6 +44,8 @@ impl Store {
     pub const PREVIOUS_KEYBOX: &'static str = "previous-keybox.xml";
     pub const LOG: &'static str = "replay.log";
     pub const SETTINGS: &'static str = "settings.json";
+    /// The certificate status list `apply` was given last (`Store::status_list`).
+    pub const STATUS_LIST: &'static str = "status.json";
     pub const EXECUTABLE: &'static str = "replay";
     pub const EXECUTABLE_MODE: u32 = 0o700;
     /// The lock that `apply` and the package watcher hold while they read the settings and
@@ -128,5 +131,18 @@ impl Store {
 
     pub fn previous_keybox(&self) -> PathBuf {
         self.directory.join(Store::PREVIOUS_KEYBOX)
+    }
+
+    /// The copy of the certificate status list that `apply` was given last, as JSON, for the
+    /// runs that are given none (the boot hook). `None` when there is none or it cannot be
+    /// read: revocation is then not known, which only keeps keys.
+    pub fn status_list(&self) -> Option<String> {
+        let bytes = Files::read_optional(&self.directory.join(Store::STATUS_LIST)).ok()??;
+        String::from_utf8(bytes).ok()
+    }
+
+    pub fn save_status_list(&self, json: &str) -> Result<(), ReplayError> {
+        self.create()?;
+        Files::write_if_changed(&self.directory.join(Store::STATUS_LIST), json.as_bytes(), Store::FILE_MODE).map(|_| ())
     }
 }

@@ -1,12 +1,13 @@
 use android::{ActivityManager, Capability, DeviceKeystore, KeyDeletion, PackageList, PackageManager, ProcessCapabilities};
+use attestation::{StatusList, TrustAnchors};
 use der::Time;
-use keybox::KeyboxDocument;
+use keybox::{KeyAlgorithm, KeyboxDocument};
 use serde::Serialize;
 
 use crate::{
-    BootHook, Component, ComponentState, Conflicts, DaemonState, Files, Fingerprint, FingerprintReport, KeystoreConfig, KeystoreDaemon, Layout, Log, Module,
-    PackageWatcher, PatchDate, PersistedKey, ReplayError, RootManager, Settings, Store, TargetList, Verifier, WatchReport, Zygisk, store::InstalledFile,
-    store::State, verify::KeyboxVerdict,
+    BootHook, Component, ComponentState, Conflicts, DaemonState, Files, Fingerprint, FingerprintReport, KeyCategory, KeyRemovalSettings, KeystoreConfig,
+    KeystoreDaemon, Layout, Log, Module, OutdatedKey, OutdatedReason, PackageWatcher, PatchDate, PersistedKey, ReplayError, RootManager, Settings, Store,
+    TargetList, Verifier, WatchReport, Zygisk, store::InstalledFile, store::State, verify::KeyboxVerdict,
 };
 
 /// The packages whose Play Integrity state must be refreshed for a new keybox or fingerprint to
@@ -34,8 +35,40 @@ pub enum KeyboxPolicy {
     Replace,
     /// Only when the keybox ranks at least as high as the installed one
     /// (`KeyboxVerdict::may_replace`), so that an automatic refresh from a mirror that serves a
-    /// revoked or broken keybox never replaces a working one.
+    /// revoked or broken keybox never replaces a working one. A mirror's newer keybox replaces
+    /// a working one of the same rank, before that one can leak and be revoked; every change of
+    /// the keybox outdates the keys attested with the old one.
     NoDowngrade,
+    /// Like `NoDowngrade`, and only when the installed keybox will not have a usable EC key
+    /// `margin_seconds` from now: it is missing, revoked, untrusted, or expires within the
+    /// margin. A working keybox is kept, so the keys attested with it stay current. A revocation
+    /// is seen only with the certificate status list.
+    WhenNeeded { margin_seconds: i64 },
+}
+
+impl KeyboxPolicy {
+    /// Why this policy keeps the installed keybox instead of the offered one, whose verdict is
+    /// `offered`; `None` when the offered one is installed. `installed` is the verdict of the
+    /// installed keybox now, and `installed_later` its verdict at the end of the margin of
+    /// `WhenNeeded` (`None` without an installed keybox that can be read).
+    pub fn declines(&self, offered: &KeyboxVerdict, installed: Option<&KeyboxVerdict>, installed_later: Option<&KeyboxVerdict>) -> Option<Declined> {
+        match self {
+            KeyboxPolicy::Replace => None,
+            KeyboxPolicy::WhenNeeded { .. } if installed_later.is_some_and(|later| later.has_usable(KeyAlgorithm::ECDSA)) => Some(Declined::NotNeeded),
+            KeyboxPolicy::NoDowngrade | KeyboxPolicy::WhenNeeded { .. } if !offered.may_replace(installed) => Some(Declined::Worse),
+            KeyboxPolicy::NoDowngrade | KeyboxPolicy::WhenNeeded { .. } => None,
+        }
+    }
+}
+
+/// Why `install_keybox` kept the installed keybox instead of the offered one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Declined {
+    /// The installed keybox ranks higher than the offered one (`KeyboxPolicy::NoDowngrade`).
+    Worse,
+    /// The installed keybox stays usable beyond the margin (`KeyboxPolicy::WhenNeeded`).
+    NotNeeded,
 }
 
 /// What an `apply` did.
@@ -53,6 +86,8 @@ pub struct ApplyReport {
     /// The stale persisted keys kept because the keystore could not delete their alias; the
     /// next `apply` tries again (`Engine::remove_stale_keys`).
     pub stale_keys_kept: usize,
+    /// The outdated persisted keys that the settings keep (`OutdatedKey::removed_by_repair`).
+    pub outdated_keys_kept: usize,
     /// Whether the installed keybox was not well-formed and was written again (`Engine::repair_keybox`).
     pub keybox_repaired: bool,
     pub daemon_restarted: bool,
@@ -81,7 +116,7 @@ pub struct InstallReport {
     /// The keys of the offered keybox that were not written, because others are usable.
     pub dropped_keys: usize,
     /// Why the offered file was not installed, when the policy kept the installed one.
-    pub declined: Option<String>,
+    pub declined: Option<Declined>,
     pub fingerprint: Option<FingerprintReport>,
 }
 
@@ -114,8 +149,9 @@ pub struct StatusReport {
     pub targets: Option<TargetList>,
     /// The number of keys TEESimulator-RS persisted for applications.
     pub persisted_keys: usize,
-    /// The stale persisted keys (`Engine::stale_keys`).
-    pub stale_keys: Vec<PersistedKey>,
+    /// The outdated persisted keys (`Engine::outdated_keys`), judged by the saved settings: the
+    /// next repair removes those with `removed_by_repair`.
+    pub outdated_keys: Vec<OutdatedKey>,
     pub daemon: DaemonState,
     pub boot_hook: BootHook,
     pub applied_at: Option<u64>,
@@ -155,11 +191,6 @@ impl Engine {
     /// finds none. The key of TEESimulator-RS and a key of the device's keystore make two; the
     /// rest allows for an application that makes its key again in the meantime.
     pub const STALE_KEY_DELETIONS: usize = 4;
-    /// The aliases of the keys of the Play stack that are known to serve the Play Integrity API:
-    /// the only keys that are stale for attesting another security patch (`Engine::stale_keys`).
-    /// `integrity.api.key.alias` is the key of the Play Integrity API, seen in the keystore2
-    /// database of a device as a key of the Play Store.
-    pub const INTEGRITY_KEY_ALIASES: [&'static str; 1] = ["integrity.api.key.alias"];
 
     /// The properties that hold the API level the device launched with, in order of preference.
     pub const FIRST_API_LEVEL_PROPERTIES: [&'static str; 3] = ["ro.product.first_api_level", "ro.board.first_api_level", "ro.board.api_level"];
@@ -181,14 +212,30 @@ impl Engine {
     /// Loads the certificate status list from its JSON, if the application fetched it. Without
     /// it, revocation is not checked and the engine says so.
     fn verifier(&mut self, status_json: Option<&str>) -> Verifier {
-        let status = status_json.and_then(|json| match attestation::StatusList::parse(json) {
+        Verifier::new(self.status_list(status_json))
+    }
+
+    /// The certificate status list of `status_json`; `None` without one, or with a warning
+    /// when it is invalid.
+    fn status_list(&mut self, status_json: Option<&str>) -> Option<StatusList> {
+        status_json.and_then(|json| match StatusList::parse(json) {
             Ok(list) => Some(list),
             Err(error) => {
                 self.log.warning(format!("the certificate status list is invalid and is ignored: {error}"));
                 None
             }
-        });
-        Verifier::new(status)
+        })
+    }
+
+    /// The certificate status list that persisted keys are judged with: `status_json`, or else
+    /// the copy `apply` saved (`Store::status_list`), so that the boot hook, which is given none,
+    /// judges as the application does. A copy may miss later revocations, which only keeps keys.
+    /// An invalid `status_json` falls back to the copy as well.
+    fn key_status_list(&mut self, status_json: Option<&str>) -> Option<StatusList> {
+        self.status_list(status_json).or_else(|| {
+            let saved = self.store.status_list();
+            self.status_list(saved.as_deref())
+        })
     }
 
     /// Reads a keybox, recovering the keys of one that is not well-formed (`KeyboxDocument::read`).
@@ -209,7 +256,8 @@ impl Engine {
     /// Installs a keybox after checking it: it must be read (`KeyboxDocument::read`) and have at
     /// least one key whose private key matches its certificate (`KeyboxVerdict::is_installable`). With
     /// `KeyboxPolicy::NoDowngrade`, a keybox that ranks below the installed one is declined and
-    /// the installed one kept.
+    /// the installed one kept; with `KeyboxPolicy::WhenNeeded`, also while the installed one
+    /// stays usable beyond the margin.
     ///
     /// What is written is never the offered text itself but its keys written again as a
     /// well-formed keybox (`KeyboxDocument::render`), with only the usable keys when there are
@@ -236,13 +284,28 @@ impl Engine {
         }
         let path = self.config.keybox();
         let current = Files::read_optional(&path)?;
-        if policy == KeyboxPolicy::NoDowngrade {
-            let installed = current.as_deref().and_then(|bytes| Engine::read_keybox(bytes).ok()).map(|document| verifier.check(&document, now));
-            if !verdict.may_replace(installed.as_ref()) {
-                let reason = "the installed keybox is better than the offered one, which is kept out".to_string();
-                self.log.warning(format!("{reason}: {} of {} offered key(s) are usable", verdict.usable_keys(), verdict.keys.len()));
+        if policy != KeyboxPolicy::Replace {
+            let installed_document = current.as_deref().and_then(|bytes| Engine::read_keybox(bytes).ok());
+            let installed = installed_document.as_ref().map(|document| verifier.check(document, now));
+            let installed_later = match policy {
+                KeyboxPolicy::WhenNeeded { margin_seconds } => {
+                    installed_document.as_ref().map(|document| verifier.check(document, Time { seconds: now.seconds.saturating_add(margin_seconds) }))
+                }
+                KeyboxPolicy::Replace | KeyboxPolicy::NoDowngrade => None,
+            };
+            let declined = policy.declines(&verdict, installed.as_ref(), installed_later.as_ref());
+            match declined {
+                Some(Declined::NotNeeded) => self.log.info("the installed keybox stays usable beyond the expiry margin, so it is kept"),
+                Some(Declined::Worse) => self.log.warning(format!(
+                    "the installed keybox is better than the offered one, which is kept out: {} of {} offered key(s) are usable",
+                    verdict.usable_keys(),
+                    verdict.keys.len()
+                )),
+                None => {}
+            }
+            if declined.is_some() {
                 let sha256 = current.as_deref().map(Files::sha256).unwrap_or_default();
-                return Ok(InstallReport { sha256, changed: false, verdict: Some(verdict), dropped_keys: 0, declined: Some(reason), fingerprint: None });
+                return Ok(InstallReport { sha256, changed: false, verdict: Some(verdict), dropped_keys: 0, declined, fingerprint: None });
             }
         }
         let indices = verdict.keys_to_write();
@@ -404,43 +467,75 @@ impl Engine {
         std::str::from_utf8(&bytes).ok().and_then(KeystoreConfig::security_patch_of)
     }
 
-    /// The persisted keys that are stale:
+    /// The persisted keys that were attested with what is no longer configured, each with the
+    /// reasons (`OutdatedReason`), its category (`KeyCategory`), and whether `removal` removes
+    /// it in a repair:
     ///
     /// - every key whose chain was signed by a key that is not in the current keybox: its
-    ///   attestation fails once the old keybox is revoked or expires;
-    /// - a key of the Play Integrity API (an alias of `Engine::INTEGRITY_KEY_ALIASES`, attested
-    ///   for a package of the Play stack, `TargetList::ALWAYS`) that attests a security patch
-    ///   other than the configured one (`configured_patch`): it contradicts the patch of the
+    ///   attestation fails once the old keybox is revoked or expires. Whether that chain is
+    ///   already unusable is judged at now, with `status` for revocation;
+    /// - the key of the Play Integrity API (`KeyCategory::Integrity`) when it attests a security
+    ///   patch other than the configured one (`configured_patch`): it contradicts the patch of the
     ///   spoofed build.
     ///
-    /// The patch is compared for those keys only. Another key may hold what the user enrolled
-    /// with it (a card for tap-and-pay, a passkey, a banking application's enrolment), which
-    /// deleting it on every monthly patch would lose; and a genuine device keeps the patch of a
-    /// key's generation in its certificate too, so an older patch alone is no fault.
+    /// The patch is compared for the integrity key only. Another key may hold what the user
+    /// enrolled with it (a card for tap-and-pay, a passkey, a banking application's enrolment),
+    /// which deleting it on every monthly patch would lose; and a genuine device keeps the patch
+    /// of a key's generation in its certificate too, so an older patch alone is no fault.
     ///
-    /// Without a keybox, no key is stale: there is nothing to compare with, and a key made again
-    /// would not be attested either.
-    pub fn stale_keys(&self) -> Result<Vec<PersistedKey>, ReplayError> {
+    /// Without a keybox, no key is outdated: there is nothing to compare with, and a key made
+    /// again would not be attested either.
+    pub fn outdated_keys(&self, removal: &KeyRemovalSettings, status: Option<&StatusList>) -> Result<Vec<OutdatedKey>, ReplayError> {
         let signers = self.keybox_signers()?;
         if signers.is_empty() {
             return Ok(Vec::new());
         }
         let signers: Vec<&[u8]> = signers.iter().map(Vec::as_slice).collect();
         let patch = self.configured_patch();
-        let attests_other_patch = |key: &PersistedKey| -> bool {
-            if !key.alias_exact || !Engine::INTEGRITY_KEY_ALIASES.contains(&key.alias.as_str()) {
-                return false;
+        // Without the package list, the packages of a key come from its attestation alone.
+        let packages = PackageList::read_from(&self.layout.packages_list()).unwrap_or_default();
+        let anchors = TrustAnchors::google();
+        let now = Engine::now();
+        let mut outdated = Vec::new();
+        for key in self.persisted_keys()? {
+            let key_packages = key.packages(&packages);
+            let category = KeyCategory::of(&key, &key_packages);
+            let mut reasons = Vec::new();
+            if key.is_signed_by_other(&signers) {
+                let unusable = key.signer_problems(now, status, &anchors).is_some_and(|problems| !problems.is_empty());
+                reasons.push(OutdatedReason::OldKeybox { unusable });
             }
-            let (Some(patch), Some(description)) = (patch, key.key_description()) else { return false };
-            let lists = [&description.software_enforced, &description.hardware_enforced];
-            let is_play = lists.iter().flat_map(|list| &list.application_packages).any(|package| TargetList::ALWAYS.contains(&package.as_str()));
-            is_play && patch.differs_from_attested(&description)
-        };
-        Ok(self.persisted_keys()?.into_iter().filter(|key| key.is_signed_by_other(&signers) || attests_other_patch(key)).collect())
+            if category == KeyCategory::Integrity
+                && let (Some(patch), Some(description)) = (patch, key.key_description())
+                && patch.differs_from_attested(&description)
+            {
+                reasons.push(OutdatedReason::OldPatch);
+            }
+            if reasons.is_empty() {
+                continue;
+            }
+            let removed_by_repair = OutdatedKey::is_removed_by(category, &reasons, removal);
+            outdated.push(OutdatedKey { key, category, packages: key_packages, reasons, removed_by_repair });
+        }
+        Ok(outdated)
+    }
+
+    /// The outdated persisted keys judged by `settings`, with `status_json` or the copy of the
+    /// certificate status list that `apply` saved.
+    pub fn outdated_keys_of(&mut self, settings: &Settings, status_json: Option<&str>) -> Result<Vec<OutdatedKey>, ReplayError> {
+        let status = self.key_status_list(status_json);
+        self.outdated_keys(&settings.key_removal, status.as_ref())
+    }
+
+    /// The outdated persisted keys that a repair with `removal` removes: the stale keys.
+    pub fn stale_keys(&self, removal: &KeyRemovalSettings, status: Option<&StatusList>) -> Result<Vec<OutdatedKey>, ReplayError> {
+        Ok(self.outdated_keys(removal, status)?.into_iter().filter(|key| key.removed_by_repair).collect())
     }
 
     /// Removes the stale persisted keys (`stale_keys`), so that each application makes its key
-    /// again, attested with the current keybox and patch. Returns how many were removed and how many were kept.
+    /// again, attested with the current keybox and patch. Returns how many were removed, how
+    /// many were kept because the keystore could not delete them, and how many outdated keys
+    /// `removal` keeps.
     ///
     /// A key is deleted through the keystore, as the application that owns it, until the
     /// keystore has no key under its alias: TEESimulator-RS answers for its own key, and the
@@ -451,19 +546,56 @@ impl Engine {
     /// with the device's own root of trust: an unlocked or self-signed boot fails attestation
     /// until the application happens to make a new key.
     ///
-    /// Only a key that TEESimulator-RS hides is deleted: while its module is not active, a
-    /// device key under the alias is the application's own key, in use, and the persisted file
-    /// is inert, so the file alone is removed. When the keystore cannot delete the alias (the
+    /// Only a key that TEESimulator-RS hides is deleted: while its module is not active, or the
+    /// application is not a target, a device key under the alias is the application's own key,
+    /// in use, and the persisted file is inert, so the file alone is removed. When the keystore cannot delete the alias (the
     /// client fails, keystore2 cannot be reached, the engine cannot run the client as the
     /// application), the key is kept for the next `apply`, and the status keeps reporting it as
     /// stale. When the device has no keystore client, or the alias cannot be given to it exactly,
     /// the file alone is removed, as the only repair possible, and a warning says so.
-    pub fn remove_stale_keys(&mut self) -> Result<(usize, usize), ReplayError> {
+    pub fn remove_stale_keys(&mut self, removal: &KeyRemovalSettings, status: Option<&StatusList>) -> Result<(usize, usize, usize), ReplayError> {
         let keystore = DeviceKeystore::new(self.layout.keystore_client());
-        let mut removed = 0;
-        let mut kept = 0;
-        for key in self.stale_keys()? {
-            if self.remove_stale_key(&keystore, &key)? {
+        let targets = self.targets().unwrap_or(None);
+        let (mut removed, mut kept, mut left) = (0, 0, 0);
+        for outdated in self.outdated_keys(removal, status)? {
+            if !outdated.removed_by_repair {
+                left += 1;
+            } else if self.remove_stale_key(&keystore, &outdated, targets.as_ref())? {
+                removed += 1;
+            } else {
+                kept += 1;
+            }
+        }
+        if left > 0 {
+            self.log.info(format!("kept {left} outdated persisted key(s), as the settings say; they can be removed one by one"));
+        }
+        Ok((removed, kept, left))
+    }
+
+    /// Removes the outdated persisted keys of the user `uid` under `alias`, whatever the settings
+    /// keep, as `remove_stale_keys` removes a key: the user chose to lose what was enrolled with
+    /// them. A key that is not outdated is never removed: it is current, and removing it would
+    /// lose its enrolment for nothing. `alias` is compared with the alias as it is reported, so
+    /// a key whose alias is not read exactly can be removed too; its file alone is removed, as a
+    /// repair does. Returns how many were removed and how many were kept because the keystore
+    /// could not delete them; no such key is an error. It holds the lock of `apply`, so that the
+    /// two never delete under one alias at once.
+    pub fn remove_key(&mut self, uid: u32, alias: &str, status_json: Option<&str>) -> Result<(usize, usize), ReplayError> {
+        let _lock = self.store.lock_apply()?;
+        let status = self.key_status_list(status_json);
+        let matching: Vec<OutdatedKey> = self
+            .outdated_keys(&KeyRemovalSettings::default(), status.as_ref())?
+            .into_iter()
+            .filter(|outdated| outdated.key.uid == uid && outdated.key.alias == alias)
+            .collect();
+        if matching.is_empty() {
+            return Err(ReplayError::Rejected(vec![format!("uid {uid} has no outdated persisted key under the alias \"{alias}\"")]));
+        }
+        let keystore = DeviceKeystore::new(self.layout.keystore_client());
+        let targets = self.targets().unwrap_or(None);
+        let (mut removed, mut kept) = (0, 0);
+        for outdated in matching {
+            if self.remove_stale_key(&keystore, &outdated, targets.as_ref())? {
                 removed += 1;
             } else {
                 kept += 1;
@@ -474,15 +606,30 @@ impl Engine {
 
     /// Removes one stale persisted key (see `Engine::remove_stale_keys`). Returns whether it was
     /// removed.
-    fn remove_stale_key(&mut self, keystore: &DeviceKeystore, key: &PersistedKey) -> Result<bool, ReplayError> {
+    ///
+    /// The device's key under the alias is deleted only while TEESimulator-RS hides it: the
+    /// module is active and a package of the key is a target of `targets` (`target.txt`). For a
+    /// package that is not a target, TEESimulator-RS passes the deletion to keystore2, and the
+    /// device's key under the alias is the application's own key, in use; so the file alone is
+    /// removed. Without a target list, no package is a target.
+    fn remove_stale_key(&mut self, keystore: &DeviceKeystore, outdated: &OutdatedKey, targets: Option<&TargetList>) -> Result<bool, ReplayError> {
+        let key = &outdated.key;
         let name = format!("uid {} ({})", key.uid, key.alias);
         // A module that waits for the next boot in `modules_update` does not run yet.
-        let hiding = Module::read(&self.layout, Component::Keystore.module_id()).is_some_and(|module| module.installed && module.is_active());
-        if !hiding {
+        let active = Module::read(&self.layout, Component::Keystore.module_id()).is_some_and(|module| module.installed && module.is_active());
+        if !active {
             Files::remove(&key.path)?;
             self.log.info(format!(
                 "removed a stale persisted key of {name}; {} is not active, so a key of the device's keystore under that alias is the application's own and is left alone",
                 Component::Keystore.module_name()
+            ));
+            return Ok(true);
+        }
+        let target = targets.is_some_and(|list| list.packages().any(|package| outdated.packages.iter().any(|name| name == package)));
+        if !target {
+            Files::remove(&key.path)?;
+            self.log.info(format!(
+                "removed a stale persisted key of {name}; its application is not a target, so a key of the device's keystore under that alias is the application's own and is left alone"
             ));
             return Ok(true);
         }
@@ -542,8 +689,9 @@ impl Engine {
     }
 
     /// Restarts the keystore daemon so it reloads the keybox and the persisted keys, then asks
-    /// Play services and the Play Store to re-evaluate by ending their processes.
-    pub fn restart(&mut self) -> Result<bool, ReplayError> {
+    /// Play services and the Play Store to re-evaluate by ending their processes; with
+    /// `end_background`, every background application as well (`refresh_play`).
+    pub fn restart(&mut self, end_background: bool) -> Result<bool, ReplayError> {
         let daemon = KeystoreDaemon::new(&self.layout);
         let restarted = if daemon.state().is_running() {
             daemon.restart(&mut self.log)?;
@@ -552,13 +700,14 @@ impl Engine {
             self.log.warning("the keystore daemon is not running; not restarting it");
             false
         };
-        self.refresh_play();
+        self.refresh_play(end_background);
         Ok(restarted)
     }
 
-    /// Ends the DroidGuard and Play Store processes so they re-evaluate Play Integrity. The
-    /// system restarts them; a failure to end one is logged, not fatal.
-    pub fn refresh_play(&mut self) {
+    /// Ends the DroidGuard and Play Store processes so they re-evaluate Play Integrity, and
+    /// with `end_background` every background application, so that the other targets ask for
+    /// their keys again. The system restarts them; a failure to end one is logged, not fatal.
+    pub fn refresh_play(&mut self, end_background: bool) {
         let processes = android::ProcessTable::list().unwrap_or_default();
         for name in REFRESH_PROCESSES {
             for process in processes.iter().filter(|process| process.name == name) {
@@ -567,7 +716,7 @@ impl Engine {
                 }
             }
         }
-        if let Err(error) = ActivityManager::kill_background() {
+        if end_background && let Err(error) = ActivityManager::kill_background() {
             self.log.warning(format!("cannot end the background processes: {error}"));
         }
     }
@@ -575,13 +724,20 @@ impl Engine {
     /// Re-applies the configuration without fetching anything: saves `settings` for the boot
     /// hook (except at boot, which applies the saved ones), rebuilds `target.txt`, re-applies the
     /// spoof flags and the security patch from the installed fingerprint, writes the installed
-    /// keybox again when it is not well-formed (`repair_keybox`), removes stale persisted keys,
-    /// and restarts as `mode` says. This is what keeps the verdict from
-    /// drifting after the modules' own scripts run.
-    pub fn apply(&mut self, settings: &Settings, mode: ApplyMode) -> Result<ApplyReport, ReplayError> {
+    /// keybox again when it is not well-formed (`repair_keybox`), removes the stale persisted
+    /// keys that the settings allow (`remove_stale_keys`, judged with `status_json` or the copy
+    /// saved last), and restarts as `mode` says. This is what keeps the verdict from drifting
+    /// after the modules' own scripts run. A valid `status_json` is saved for the boot hook.
+    pub fn apply(&mut self, settings: &Settings, mode: ApplyMode, status_json: Option<&str>) -> Result<ApplyReport, ReplayError> {
         let _lock = self.store.lock_apply()?;
         if mode != ApplyMode::EarlyBoot {
             self.store.save_settings(settings)?;
+        }
+        let status = self.key_status_list(status_json);
+        if let Some(json) = status_json
+            && StatusList::parse(json).is_ok()
+        {
+            self.store.save_status_list(json)?;
         }
         let rebuilt = if mode == ApplyMode::EarlyBoot {
             None
@@ -617,8 +773,8 @@ impl Engine {
                 false
             }
         };
-        let (stale_keys_removed, stale_keys_kept) = self.remove_stale_keys()?;
-        let daemon_restarted = if mode == ApplyMode::Restart { self.restart()? } else { false };
+        let (stale_keys_removed, stale_keys_kept, outdated_keys_kept) = self.remove_stale_keys(&settings.key_removal, status.as_ref())?;
+        let daemon_restarted = if mode == ApplyMode::Restart { self.restart(settings.end_background_applications)? } else { false };
         self.update_state(|state| state.applied_at = Some(Log::now()))?;
         Ok(ApplyReport {
             targets,
@@ -627,6 +783,7 @@ impl Engine {
             spoof: spoof.values.iter().map(|(flag, value)| (flag.key().to_string(), *value)).collect(),
             stale_keys_removed,
             stale_keys_kept,
+            outdated_keys_kept,
             keybox_repaired,
             daemon_restarted,
         })
@@ -643,7 +800,7 @@ impl Engine {
             return Ok(BootReport::Uninstalled);
         }
         let settings = self.store.settings()?;
-        let report = self.apply(&settings, ApplyMode::EarlyBoot)?;
+        let report = self.apply(&settings, ApplyMode::EarlyBoot, None)?;
         self.update_state(|state| state.booted_at = Some(Log::now()))?;
         Ok(BootReport::Applied { report })
     }
@@ -776,7 +933,6 @@ impl Engine {
             .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string());
         let targets = self.readable(self.targets(), "target.txt");
         let persisted_keys = self.persisted_keys().map(|keys| keys.len()).unwrap_or(0);
-        let stale_keys = self.stale_keys().unwrap_or_default();
         let daemon = KeystoreDaemon::new(&self.layout).state();
         let boot_hook = BootHook::current(&self.layout);
         let state = self.store.state(&mut self.log);
@@ -784,6 +940,8 @@ impl Engine {
             self.log.warning(format!("the saved settings cannot be read: {error}"));
             Settings::default()
         });
+        let key_status = self.key_status_list(status_json);
+        let outdated_keys = self.outdated_keys(&settings.key_removal, key_status.as_ref()).unwrap_or_default();
         let spoof = settings.spoof_flags(Engine::sdk()).values.iter().map(|(flag, value)| (flag.key().to_string(), *value)).collect();
         let missing_capabilities = Engine::missing_capabilities().unwrap_or_default().iter().map(Capability::to_string).collect();
         let strong_ready = components.iter().all(ComponentState::is_ready)
@@ -807,7 +965,7 @@ impl Engine {
             security_patch,
             targets,
             persisted_keys,
-            stale_keys,
+            outdated_keys,
             daemon,
             boot_hook,
             applied_at: state.applied_at,

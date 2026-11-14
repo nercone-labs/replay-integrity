@@ -3,7 +3,10 @@ package dev.nercone.replayintegrity.config
 import android.content.Context
 import androidx.core.content.edit
 import dev.nercone.replayintegrity.engine.EngineSettings
+import dev.nercone.replayintegrity.engine.KeyRemovalSettings
+import dev.nercone.replayintegrity.engine.KeyboxPolicy
 import dev.nercone.replayintegrity.engine.TargetMode
+import dev.nercone.replayintegrity.engine.TargetScope
 import dev.nercone.replayintegrity.net.Downloader
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,8 +32,16 @@ class Settings(context: Context) {
          * asked for only when the user chooses to grant it, until the privilege choice changes.
          */
         val permissionDeclined: Boolean = false,
-        /** Whether the keybox is downloaded and replaced on every refresh. */
+        /** Whether the keybox is downloaded on every refresh, and installed as `keyboxReplacement` says. */
         val autoKeybox: Boolean = true,
+        /** When a downloaded keybox replaces the installed one. */
+        val keyboxReplacement: KeyboxReplacement = KeyboxReplacement.WHEN_NEEDED,
+        /**
+         * How many hours before the installed keybox expires it is replaced, with
+         * `KeyboxReplacement.WHEN_NEEDED`; longer than the longest refresh interval, so that a
+         * refresh comes in time.
+         */
+        val keyboxExpiryMarginHours: Int = DEFAULT_EXPIRY_MARGIN_HOURS,
         /** Whether the fingerprint is downloaded and replaced on every refresh. */
         val autoFingerprint: Boolean = true,
         /** Where the keybox is downloaded from (the keybox XML, or base64 of it). */
@@ -51,6 +62,8 @@ class Settings(context: Context) {
          * takes effect at once. Otherwise it takes effect at the next reboot.
          */
         val restartOnChange: Boolean = true,
+        /** Whether a restart also ends every background application, so that other targets ask for their keys again. */
+        val endBackgroundApplications: Boolean = false,
         /** Whether the root manager runs the engine at every boot, before the framework starts. */
         val bootHook: Boolean = true,
         /**
@@ -70,12 +83,16 @@ class Settings(context: Context) {
         val extraPackages: List<String> = emptyList(),
         /** Installed packages left out of the attestation targets. */
         val excludedPackages: List<String> = emptyList(),
+        /** Which installed applications are targets besides the Play stack. */
+        val targetScope: TargetScope = TargetScope.ALL_APPLICATIONS,
         /** How TEESimulator-RS handles the keys of every target but the Play stack. */
         val targetMode: TargetMode = TargetMode.AUTO,
         /** How TEESimulator-RS handles the keys of the Play stack; generating them is recommended. */
         val playTargetMode: TargetMode = TargetMode.GENERATE,
         /** Overrides of the spoof flags, by key; a flag without one has its recommended value. */
         val spoofOverrides: Map<String, Boolean> = emptyMap(),
+        /** Which outdated persisted keys a repair removes. */
+        val keyRemoval: KeyRemovalSettings = KeyRemovalSettings(),
         /** When the last refresh finished, in milliseconds since the Unix epoch. */
         val lastRefreshAt: Long? = null,
         /** The problems of the last refresh; empty when it succeeded. */
@@ -84,14 +101,39 @@ class Settings(context: Context) {
         /** The keybox sources in the order they are tried: `keyboxUrl`, then `extraKeyboxUrls`. */
         fun keyboxSources(): List<String> = (listOf(keyboxUrl) + extraKeyboxUrls).distinct()
 
+        /** When the engine installs a keybox that a refresh downloaded. */
+        fun keyboxPolicy(): KeyboxPolicy = when (keyboxReplacement) {
+            KeyboxReplacement.WHEN_NEEDED -> KeyboxPolicy.WhenNeeded(keyboxExpiryMarginHours)
+            KeyboxReplacement.NO_DOWNGRADE -> KeyboxPolicy.NoDowngrade
+        }
+
         /** The part of the settings that the engine reads. */
         fun engine(): EngineSettings = EngineSettings(
             extraPackages = extraPackages,
             excludedPackages = excludedPackages,
+            targetScope = targetScope,
             targetMode = targetMode,
             playTargetMode = playTargetMode,
             spoofOverrides = spoofOverrides.map { (key, value) -> EngineSettings.override(key, value) },
+            keyRemoval = keyRemoval,
+            endBackgroundApplications = endBackgroundApplications,
         )
+    }
+
+    /** When a downloaded keybox replaces the installed one. */
+    @Serializable
+    enum class KeyboxReplacement {
+        /**
+         * Only when the installed keybox is missing, revoked, untrusted or about to expire, and
+         * not with a worse one: the keys attested with a working keybox stay current.
+         */
+        WHEN_NEEDED,
+
+        /**
+         * Whenever the downloaded keybox is not worse: a mirror's newer keybox replaces a working
+         * one before that one can leak, and every change outdates the keys attested with the old one.
+         */
+        NO_DOWNGRADE,
     }
 
     fun read(): Values {
@@ -112,6 +154,9 @@ class Settings(context: Context) {
         const val VALUES = "values"
         const val DEFAULT_REFRESH_HOURS = 6
         val REFRESH_CHOICES = listOf(0, 3, 6, 12, 24)
+        const val DEFAULT_EXPIRY_MARGIN_HOURS = 48
+        /** Every choice is longer than the longest refresh interval (24 hours), so that a refresh comes in time. */
+        val EXPIRY_MARGIN_CHOICES = listOf(48, 72, 168)
         val JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true; coerceInputValues = true }
 
         /**

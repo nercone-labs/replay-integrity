@@ -67,6 +67,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.nercone.replayintegrity.R
 import dev.nercone.replayintegrity.config.Settings
+import dev.nercone.replayintegrity.engine.ApplyReport
 import dev.nercone.replayintegrity.engine.Component
 import dev.nercone.replayintegrity.engine.ComponentState
 import dev.nercone.replayintegrity.engine.Flavor
@@ -263,7 +264,7 @@ object HomeScreen {
                 val lines = buildList {
                     refreshed.keybox?.let { add(stringResource(if (it.changed) R.string.outcome_keybox_new else R.string.outcome_keybox_same)) }
                     refreshed.fingerprint?.let { add(stringResource(if (it.changed) R.string.outcome_fingerprint_new else R.string.outcome_fingerprint_same)) }
-                    add(applySummary(refreshed.apply.targets, refreshed.apply.staleKeysRemoved, refreshed.apply.daemonRestarted))
+                    add(applySummary(refreshed.apply, refreshed.apply.daemonRestarted))
                     refreshed.problems.forEach { add(it) }
                 }
                 val tone = if (refreshed.problems.isEmpty()) Widgets.Tone.INFORMATION else Widgets.Tone.WARNING
@@ -276,7 +277,7 @@ object HomeScreen {
             is Outcome.Repaired -> Widgets.Notice(
                 Widgets.Tone.INFORMATION,
                 stringResource(R.string.outcome_repaired),
-                applySummary(outcome.repaired.apply.targets, outcome.repaired.apply.staleKeysRemoved, outcome.repaired.restarted),
+                applySummary(outcome.repaired.apply, outcome.repaired.restarted),
             ) {
                 logButton()
                 dismiss()
@@ -284,7 +285,7 @@ object HomeScreen {
             is Outcome.Installed -> Widgets.Notice(
                 Widgets.Tone.INFORMATION,
                 stringResource(R.string.outcome_installed),
-                stringResource(R.string.outcome_installed_text) + "\n" + applySummary(outcome.repaired.apply.targets, outcome.repaired.apply.staleKeysRemoved, outcome.repaired.restarted),
+                stringResource(R.string.outcome_installed_text) + "\n" + applySummary(outcome.repaired.apply, outcome.repaired.restarted),
             ) {
                 logButton()
                 dismiss()
@@ -309,6 +310,14 @@ object HomeScreen {
                 logButton()
                 dismiss()
             }
+            is Outcome.KeyRemoved -> Widgets.Notice(
+                if (outcome.report.kept == 0) Widgets.Tone.INFORMATION else Widgets.Tone.WARNING,
+                stringResource(R.string.outcome_key_removed),
+                stringResource(if (outcome.report.kept == 0) R.string.outcome_key_removed_text else R.string.outcome_key_kept_text),
+            ) {
+                logButton()
+                dismiss()
+            }
             is Outcome.Failed -> Widgets.Notice(Widgets.Tone.ERROR, stringResource(R.string.outcome_failed), outcome.text) {
                 logButton()
                 dismiss()
@@ -317,9 +326,10 @@ object HomeScreen {
     }
 
     @Composable
-    fun applySummary(targets: Int, staleKeys: Int, restarted: Boolean): String = listOf(
-        pluralStringResource(R.plurals.summary_targets, targets, targets),
-        pluralStringResource(R.plurals.summary_stale_removed, staleKeys, staleKeys),
+    fun applySummary(report: ApplyReport, restarted: Boolean): String = listOfNotNull(
+        pluralStringResource(R.plurals.summary_targets, report.targets, report.targets),
+        pluralStringResource(R.plurals.summary_stale_removed, report.staleKeysRemoved, report.staleKeysRemoved),
+        report.outdatedKeysKept.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.summary_outdated_kept, it, it) },
         stringResource(if (restarted) R.string.summary_restarted else R.string.summary_not_restarted),
     ).joinToString("\n")
 
@@ -442,11 +452,13 @@ object HomeScreen {
     @Composable
     fun keysCheck(status: StatusReport): Check {
         val stale = status.staleKeys.size
+        val kept = status.keptKeys.size
         val (level, text) = when {
             stale > 0 -> Level.WARNING to pluralStringResource(R.plurals.keys_stale, stale, stale, status.persistedKeys)
+            kept > 0 -> Level.NEUTRAL to pluralStringResource(R.plurals.keys_kept, kept, kept, status.persistedKeys)
             else -> Level.OK to pluralStringResource(R.plurals.keys_current, status.persistedKeys, status.persistedKeys)
         }
-        return Check(Icons.Default.Key, level, stringResource(R.string.check_keys), text, null)
+        return Check(Icons.Default.Key, level, stringResource(R.string.check_keys), text, if (stale + kept > 0) ReplayApp.Destination.ATTESTATION else null)
     }
 
     @Composable

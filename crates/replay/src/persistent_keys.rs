@@ -2,11 +2,13 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use attestation::KeyDescription;
+use android::{PackageEntry, PackageList};
+use attestation::{Chain, ChainProblem, KeyDescription, StatusList, TrustAnchors};
+use der::Time;
 use serde::Serialize;
 use x509::Certificate;
 
-use crate::ReplayError;
+use crate::{KeyRemoval, KeyRemovalSettings, ReplayError, TargetList};
 
 /// A key that TEESimulator-RS generated for an application and keeps in `persistent_keys/`,
 /// with the certificate chain it attested the key with.
@@ -121,6 +123,114 @@ impl PersistedKey {
     pub fn key_description(&self) -> Option<KeyDescription> {
         let certificate = Certificate::parse(self.chain.first()?).ok()?;
         KeyDescription::parse(&certificate.extension(KeyDescription::EXTENSION)?.value).ok()
+    }
+
+    /// The packages the key belongs to: those its attestation names (`attestationApplicationId`)
+    /// and those of `packages` (the package list) that run as its user. Either alone may be
+    /// missing: a key attested without an application ID, or a package list that cannot be read.
+    pub fn packages(&self, packages: &[PackageEntry]) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .key_description()
+            .map(|description| [description.software_enforced, description.hardware_enforced].into_iter().flat_map(|list| list.application_packages).collect())
+            .unwrap_or_default();
+        let app_id = PackageList::app_id(self.uid);
+        names.extend(packages.iter().filter(|entry| entry.app_id == app_id).map(|entry| entry.name.clone()));
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// The problems at `now` of the chain that signed the key: its certificates after the key's
+    /// own, which are those of the keybox key that attested it. `None` when that chain is
+    /// missing or a certificate of it cannot be read, so that nothing is known about it.
+    pub fn signer_problems(&self, now: Time, status: Option<&StatusList>, anchors: &TrustAnchors) -> Option<Vec<ChainProblem>> {
+        let certificates = self.chain.get(1..).filter(|chain| !chain.is_empty())?;
+        let certificates: Vec<Certificate> = certificates.iter().map(|der| Certificate::parse(der).ok()).collect::<Option<_>>()?;
+        Some(Chain::new(certificates).problems(now, status, anchors))
+    }
+}
+
+/// What a persisted key is for, which decides what its removal costs the user
+/// (`KeyRemovalSettings`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeyCategory {
+    /// The key of the Play Integrity API: an alias of `KeyCategory::INTEGRITY_ALIASES`, of a
+    /// package of the Play stack. It holds nothing of the user's, and the Play Store makes it
+    /// again when it is gone.
+    Integrity,
+    /// Another key of the Play stack (`TargetList::ALWAYS`): tap-and-pay cards, passkeys and the
+    /// like, which are lost with the key.
+    Play,
+    /// A key of any other application, or of an application that cannot be told: its
+    /// enrolment is lost with the key.
+    Application,
+}
+
+impl KeyCategory {
+    /// The aliases of the keys of the Play stack that are known to serve the Play Integrity
+    /// API. `integrity.api.key.alias` is the key of the Play Integrity API, seen in the
+    /// keystore2 database of a device as a key of the Play Store.
+    pub const INTEGRITY_ALIASES: [&'static str; 1] = ["integrity.api.key.alias"];
+
+    /// The category of `key`, which belongs to `packages` (`PersistedKey::packages`). A key
+    /// whose packages are not known is an application's: the category whose removal is the
+    /// most careful.
+    pub fn of(key: &PersistedKey, packages: &[String]) -> KeyCategory {
+        let play = packages.iter().any(|package| TargetList::ALWAYS.contains(&package.as_str()));
+        if play && key.alias_exact && KeyCategory::INTEGRITY_ALIASES.contains(&key.alias.as_str()) {
+            KeyCategory::Integrity
+        } else if play {
+            KeyCategory::Play
+        } else {
+            KeyCategory::Application
+        }
+    }
+}
+
+/// Why a persisted key is outdated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum OutdatedReason {
+    /// Its chain was signed by a key that is not in the installed keybox. `unusable` is whether
+    /// that chain is known to be no longer valid (`PersistedKey::signer_problems`): revoked,
+    /// expired, untrusted or broken. A chain that cannot be read, or a revocation that cannot be
+    /// checked, is not known to be unusable.
+    OldKeybox { unusable: bool },
+    /// It is the key of the Play Integrity API and attests a security patch other than the
+    /// configured one, which contradicts the spoofed build.
+    OldPatch,
+}
+
+/// A persisted key that was attested with what is no longer configured, with whether a repair
+/// removes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutdatedKey {
+    #[serde(flatten)]
+    pub key: PersistedKey,
+    pub category: KeyCategory,
+    /// The packages of the key (`PersistedKey::packages`).
+    pub packages: Vec<String>,
+    pub reasons: Vec<OutdatedReason>,
+    /// Whether a repair removes the key with the settings it was judged by
+    /// (`OutdatedKey::is_removed_by`). A key that is kept is still reported, and the user can
+    /// remove it (`Engine::remove_key`).
+    pub removed_by_repair: bool,
+}
+
+impl OutdatedKey {
+    /// Whether `removal` removes the key: for any of its reasons, the settings of its category
+    /// allow it.
+    pub fn is_removed_by(category: KeyCategory, reasons: &[OutdatedReason], removal: &KeyRemovalSettings) -> bool {
+        reasons.iter().any(|reason| match reason {
+            OutdatedReason::OldKeybox { unusable } => match removal.of(category) {
+                KeyRemoval::Never => false,
+                KeyRemoval::WhenUnusable => *unusable,
+                KeyRemoval::WhenReplaced => true,
+            },
+            OutdatedReason::OldPatch => category == KeyCategory::Integrity && removal.integrity_patch,
+        })
     }
 }
 

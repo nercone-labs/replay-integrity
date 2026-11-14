@@ -23,12 +23,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import dev.nercone.replayintegrity.R
+import dev.nercone.replayintegrity.config.Protection
 import dev.nercone.replayintegrity.config.Settings
+import dev.nercone.replayintegrity.engine.KeyRemoval
 import dev.nercone.replayintegrity.net.Downloader
 import dev.nercone.replayintegrity.privilege.Privilege
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 
-/** Settings of the application: the privilege, the refresh, the boot, the notifications. */
+/**
+ * Settings of the application: the privilege, the protection (the trade between safety and
+ * integrity, as a whole and one setting at a time), the refresh, the boot, the notifications.
+ */
 object SettingsScreen {
     const val STORE = "/data/adb/replay-integrity"
 
@@ -67,15 +72,78 @@ object SettingsScreen {
             }
             Text(stringResource(R.string.settings_privilege_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
 
+            Widgets.Header(stringResource(R.string.settings_protection))
+            val protection = Protection.of(settings)
+            Widgets.Group {
+                Protection.entries.forEachIndexed { index, choice ->
+                    Widgets.RadioItem(
+                        index, Protection.entries.size,
+                        headline = Labels.protection(choice) + if (choice == Protection.DEFAULT) stringResource(R.string.protection_default_suffix) else "",
+                        supporting = Labels.protectionHelp(choice),
+                        selected = protection == choice,
+                    ) { model.setProtection(choice) }
+                }
+            }
+            Text(
+                stringResource(if (protection == null) R.string.protection_custom else R.string.protection_help),
+                style = MaterialTheme.typography.bodySmall,
+                color = Widgets.secondary,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+
+            Widgets.Header(stringResource(R.string.settings_keys))
+            Widgets.Group {
+                KeyRemovalPanel(0, 4, stringResource(R.string.settings_keys_integrity), stringResource(R.string.settings_keys_integrity_help), settings.keyRemoval.integrity) { removal ->
+                    model.configure { it.copy(keyRemoval = it.keyRemoval.copy(integrity = removal)) }
+                }
+                KeyRemovalPanel(1, 4, stringResource(R.string.settings_keys_play), stringResource(R.string.settings_keys_play_help), settings.keyRemoval.play) { removal ->
+                    model.configure { it.copy(keyRemoval = it.keyRemoval.copy(play = removal)) }
+                }
+                KeyRemovalPanel(2, 4, stringResource(R.string.settings_keys_applications), stringResource(R.string.settings_keys_applications_help), settings.keyRemoval.applications) { removal ->
+                    model.configure { it.copy(keyRemoval = it.keyRemoval.copy(applications = removal)) }
+                }
+                Widgets.SwitchItem(3, 4, stringResource(R.string.settings_keys_patch), stringResource(R.string.settings_keys_patch_help), settings.keyRemoval.integrityPatch) { enabled ->
+                    model.configure { it.copy(keyRemoval = it.keyRemoval.copy(integrityPatch = enabled)) }
+                }
+            }
+            Text(stringResource(R.string.settings_keys_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
+
             Widgets.Header(stringResource(R.string.settings_refresh))
             Widgets.Group {
-                Widgets.SwitchItem(0, 4, stringResource(R.string.settings_auto_keybox), stringResource(R.string.settings_auto_keybox_help), settings.autoKeybox) { enabled ->
+                Widgets.SwitchItem(0, 5, stringResource(R.string.settings_auto_keybox), stringResource(R.string.settings_auto_keybox_help), settings.autoKeybox) { enabled ->
                     model.configure { it.copy(autoKeybox = enabled) }
                 }
-                Widgets.SwitchItem(1, 4, stringResource(R.string.settings_auto_fingerprint), stringResource(R.string.settings_auto_fingerprint_help), settings.autoFingerprint) { enabled ->
+                Widgets.Panel(1, 5) {
+                    Text(stringResource(R.string.settings_keybox_replacement), style = MaterialTheme.typography.bodyLarge)
+                    Widgets.Segments(
+                        Settings.KeyboxReplacement.entries,
+                        settings.keyboxReplacement,
+                        { Labels.keyboxReplacement(it) },
+                        { replacement -> model.configure { it.copy(keyboxReplacement = replacement) } },
+                    )
+                    Text(
+                        stringResource(
+                            if (settings.keyboxReplacement == Settings.KeyboxReplacement.WHEN_NEEDED) R.string.settings_keybox_replacement_when_needed_help
+                            else R.string.settings_keybox_replacement_no_downgrade_help,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Widgets.secondary,
+                    )
+                    if (settings.keyboxReplacement == Settings.KeyboxReplacement.WHEN_NEEDED) {
+                        Text(stringResource(R.string.settings_expiry_margin), style = MaterialTheme.typography.bodyLarge)
+                        Widgets.Segments(
+                            Settings.EXPIRY_MARGIN_CHOICES,
+                            settings.keyboxExpiryMarginHours,
+                            { hours -> stringResource(R.string.hours_short, hours) },
+                            { hours -> model.configure { it.copy(keyboxExpiryMarginHours = hours) } },
+                        )
+                        Text(stringResource(R.string.settings_expiry_margin_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary)
+                    }
+                }
+                Widgets.SwitchItem(2, 5, stringResource(R.string.settings_auto_fingerprint), stringResource(R.string.settings_auto_fingerprint_help), settings.autoFingerprint) { enabled ->
                     model.configure { it.copy(autoFingerprint = enabled) }
                 }
-                Widgets.Panel(2, 4) {
+                Widgets.Panel(3, 5) {
                     Text(stringResource(R.string.settings_interval), style = MaterialTheme.typography.bodyLarge)
                     Widgets.Segments(
                         Settings.REFRESH_CHOICES,
@@ -85,7 +153,7 @@ object SettingsScreen {
                     )
                     Text(stringResource(R.string.settings_interval_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary)
                 }
-                Widgets.SwitchItem(3, 4, stringResource(R.string.settings_unmetered), stringResource(R.string.settings_unmetered_help), settings.refreshUnmetered, enabled = settings.refreshHours != 0) { enabled ->
+                Widgets.SwitchItem(4, 5, stringResource(R.string.settings_unmetered), stringResource(R.string.settings_unmetered_help), settings.refreshUnmetered, enabled = settings.refreshHours != 0) { enabled ->
                     model.configure { it.copy(refreshUnmetered = enabled) }
                 }
             }
@@ -120,10 +188,13 @@ object SettingsScreen {
 
             Widgets.Header(stringResource(R.string.settings_behavior))
             Widgets.Group {
-                Widgets.SwitchItem(0, 2, stringResource(R.string.settings_restart_on_change), stringResource(R.string.settings_restart_on_change_help), settings.restartOnChange) { enabled ->
+                Widgets.SwitchItem(0, 3, stringResource(R.string.settings_restart_on_change), stringResource(R.string.settings_restart_on_change_help), settings.restartOnChange) { enabled ->
                     model.configure { it.copy(restartOnChange = enabled) }
                 }
-                Widgets.Item(1, 2, stringResource(R.string.settings_restart_now), stringResource(R.string.settings_restart_now_help), enabled = privileged, onClick = model::restart)
+                Widgets.SwitchItem(1, 3, stringResource(R.string.settings_end_background), stringResource(R.string.settings_end_background_help), settings.endBackgroundApplications) { enabled ->
+                    model.configure { it.copy(endBackgroundApplications = enabled) }
+                }
+                Widgets.Item(2, 3, stringResource(R.string.settings_restart_now), stringResource(R.string.settings_restart_now_help), enabled = privileged, onClick = model::restart)
             }
 
             Widgets.Header(stringResource(R.string.settings_boot))
@@ -191,6 +262,16 @@ object SettingsScreen {
                     confirmButton = { TextButton(onClick = { credits = false }) { Text(stringResource(R.string.dismiss)) } },
                 )
             }
+        }
+    }
+
+    /** The removal of one kind of outdated key (`KeyRemovalSettings`), as a choice of `KeyRemoval`. */
+    @Composable
+    fun KeyRemovalPanel(index: Int, count: Int, title: String, help: String, removal: KeyRemoval, onSelect: (KeyRemoval) -> Unit) {
+        Widgets.Panel(index, count) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Widgets.Segments(KeyRemoval.entries, removal, { Labels.keyRemoval(it) }, onSelect)
+            Text(help, style = MaterialTheme.typography.bodySmall, color = Widgets.secondary)
         }
     }
 }

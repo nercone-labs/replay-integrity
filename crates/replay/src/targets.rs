@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::TargetScope;
+
 /// How TEESimulator-RS handles the keys of a package (`target.txt`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,10 +81,11 @@ impl TargetList {
         ["org.lsposed.manager", "io.github.lsposed.manager", "de.robv.android.xposed.installer", "org.meowcat.edxposed.manager"];
 
     /// Builds the list from the installed packages and the settings. The Play stack comes
-    /// first and is always in the list; then the third-party packages, the installed wallet
-    /// applications (which are often system packages) and the extra packages, without the
-    /// excluded ones and without Xposed managers. The Play stack gets `play_target_mode` of the
-    /// settings, and every other target `target_mode`.
+    /// first and is always in the list; then, as far as `target_scope` of the settings reaches,
+    /// the third-party packages and the installed wallet applications (which are often system
+    /// packages); then the extra packages, without the excluded ones and without Xposed
+    /// managers. The Play stack gets `play_target_mode` of the settings, and every other target
+    /// `target_mode`.
     pub fn build(installed: &[String], third_party: &[String], settings: &crate::Settings) -> TargetList {
         let mut targets = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -92,8 +95,10 @@ impl TargetList {
                 targets.push(Target { package: package.to_string(), mode: settings.play_target_mode });
             }
         }
-        let wallets = TargetList::WALLET.iter().filter(|wallet| installed.iter().any(|package| package == *wallet));
-        let candidates = third_party.iter().map(String::as_str).chain(wallets.copied()).chain(settings.extra_packages.iter().map(String::as_str));
+        let scope = settings.target_scope;
+        let third_party = third_party.iter().map(String::as_str).filter(|_| scope == TargetScope::AllApplications);
+        let wallets = TargetList::WALLET.iter().copied().filter(|wallet| scope != TargetScope::Play && installed.iter().any(|package| package == wallet));
+        let candidates = third_party.chain(wallets).chain(settings.extra_packages.iter().map(String::as_str));
         for package in candidates {
             let excluded = TargetList::EXPOSED.contains(&package) || settings.excluded_packages.iter().any(|excluded| excluded == package);
             if !excluded && Target::is_package_name(package) && seen.insert(package) {

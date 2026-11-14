@@ -15,7 +15,8 @@
 //! spoof flags are reset by the modules' own refresh scripts, and — the subtlest — TEESimulator
 //! keeps per-application keys it generated with an older keybox, so those applications keep
 //! receiving a chain built from a keybox that is no longer valid. `Engine::apply` re-applies the
-//! configuration and removes those stale keys; run at boot (through the boot hook, `Engine::boot`) and
+//! configuration and removes those of the outdated keys that the settings allow it to remove
+//! (`KeyRemovalSettings`), keeping by default the keys that may hold what the user enrolled; run at boot (through the boot hook, `Engine::boot`) and
 //! periodically (by the application), it is what keeps the verdict from decaying. The package
 //! watcher (`Engine::watch`) keeps the target list current between those runs, so that an
 //! application installed in the meantime is attested at once.
@@ -44,8 +45,8 @@ mod verify;
 mod watcher;
 
 pub use components::{Component, ComponentState, Conflicts, Flavor};
-pub use config::{KeystoreConfig, Settings};
-pub use engine::{ApplyMode, ApplyReport, BootReport, Engine, InstallReport, KeyboxPolicy, REFRESH_PROCESSES, StatusReport};
+pub use config::{KeyRemoval, KeyRemovalSettings, KeystoreConfig, Settings, TargetScope};
+pub use engine::{ApplyMode, ApplyReport, BootReport, Declined, Engine, InstallReport, KeyboxPolicy, REFRESH_PROCESSES, StatusReport};
 pub use error::ReplayError;
 pub use files::Files;
 pub use fingerprint::{Fingerprint, FingerprintProblem, FingerprintReport, SpoofFlag, SpoofFlags};
@@ -55,7 +56,7 @@ pub use layout::Layout;
 pub use log::{Log, LogLevel, LogLine};
 pub use module::Module;
 pub use patch_date::PatchDate;
-pub use persistent_keys::PersistedKey;
+pub use persistent_keys::{KeyCategory, OutdatedKey, OutdatedReason, PersistedKey};
 pub use root_manager::{RootManager, Zygisk};
 pub use store::{InstalledFile, State, Store};
 pub use targets::{Target, TargetList, TargetMode};
