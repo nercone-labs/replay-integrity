@@ -34,16 +34,13 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
 - The **verdict** at the top: ready for STRONG, needs attention, not set up, or why the app cannot
   act (no root, restricted root).
 - **Refresh** downloads fresh inputs and applies them. **Repair** re-applies everything and removes
-  stale keys without downloading. A stale key is deleted through the keystore, as the app that owns
-  it, together with a key of the device's own keystore under the same name: an app could otherwise
-  pick up that older key, which reports the device's real (unlocked or self-signed) boot state,
-  until it happens to make a new one. This is done only while TEESimulator-RS is active; without
-  it, that older key is the app's own and is left alone. When the keystore cannot delete the key,
-  it is kept, still shown as stale, and the next repair tries again. A key is stale when it was made
-  with a keybox that is no longer installed. The Play Integrity key of the Play Store is also
-  stale when it was made with a security patch other than the current fingerprint's; other keys
-  keep the patch they were made with, as on a genuine device, so that cards, passkeys and app
-  enrolments are not lost on every monthly patch.
+  the outdated keys that the settings allow (see "Outdated keys" below) without downloading. A key
+  is deleted through the keystore, as the app that owns it, together with a key of the device's own
+  keystore under the same name: an app could otherwise pick up that older key, which reports the
+  device's real (unlocked or self-signed) boot state, until it happens to make a new one. This is
+  done only while TEESimulator-RS is active; without it, that older key is the app's own and is
+  left alone. When the keystore cannot delete the key, it is kept, still shown as stale, and the
+  next repair tries again.
 - The **checklist**: both modules, Zygisk, the keybox (a usable EC key, revocation, expiry, and
   whether the keystore can read the file), the fingerprint (model, patch, expiry), the spoof flags (and whether another script
   rewrote them), the per-app keys (how many were made with an old keybox or security patch), the keystore daemon,
@@ -52,6 +49,65 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
   apply, and the engine log of the last operation.
 - **This device**: the real model, Android version, security patch, first API level and build
   fingerprint.
+
+## Protection
+
+Some settings trade the safety of your data and of the device against how surely and how quickly
+STRONG is reached. **Settings → Protection** sets all of them at once; each one can then be
+adjusted on its own, and the protection reads **Custom** until one is chosen again.
+
+| Setting | Maximum safety | Balanced (default) | Integrity first |
+| --- | --- | --- | --- |
+| Replace the keybox | When needed | When needed | Whenever not worse |
+| Targets | Google Play + wallets | All applications | All applications |
+| Key handling of Google Play | Automatic | Generate | Generate |
+| Key handling (other targets) | Automatic | Automatic | Automatic |
+| Outdated Play Integrity key | When replaced | When replaced | When replaced |
+| Outdated other Google Play keys | Never | Never | When replaced |
+| Outdated keys of other applications | Never | Never | When replaced |
+| Renew the Play Integrity key on a new patch | On | On | On |
+| Restart the keystore on changes | Off | On | On |
+| Also end background applications | Off | Off | On |
+
+- **Balanced** reaches STRONG almost surely while keeping what you set up: the keybox is replaced
+  only when it must be, and the only key removed when it is outdated is the Play Integrity key,
+  which holds nothing of yours. Cards in Google Wallet, passkeys and applications' enrolments
+  survive a new keybox and a new security patch.
+- **Maximum safety** changes as little as possible: fewer applications are targets, Google Play
+  keeps the device's own keys while its keystore works, and changes wait for the next reboot.
+  STRONG may be lost on a device whose own keystore fails attestation, and after a change until
+  the reboot.
+- **Integrity first** takes a mirror's newer keybox at once and removes every outdated key as
+  soon as its keybox is replaced. Cards, passkeys and enrolments are lost at every change of the
+  keybox and must be set up again.
+
+The Play Integrity key is removed when outdated in every protection: the Play Store makes it
+again, and it holds nothing of yours, so keeping it would cost STRONG for nothing.
+
+### Outdated keys
+
+TEESimulator-RS keeps the keys it made for each application with the certificate chain of the
+keybox in use at the time. When the keybox changes, those keys keep the old chain: they are
+**outdated**. Each kind of key has its own setting (**Settings → Outdated keys**):
+
+- **Never**: the key is kept. It keeps working as long as its old keybox is valid.
+- **When unusable**: the key is removed once its old chain is known to fail: revoked (seen with
+  Google's certificate status list), expired or untrusted.
+- **When replaced**: the key is removed as soon as the keybox changes.
+
+The kinds are the **Play Integrity key** (the Play Store's key for the Play Integrity API),
+**other Google Play keys** (Google Wallet's tap-and-pay cards and passkeys live in Play services)
+and **keys of other applications**. A key whose application cannot be told is treated as another
+application's, the most careful kind. The Play Integrity key is also outdated when it was made
+with another security patch than the current fingerprint's, unless **Renew the Play Integrity key
+on a new security patch** is off; other keys keep the patch they were made with, as on a genuine
+device.
+
+Outdated keys that the settings keep are listed under **Attestation → Outdated keys**, each with
+what it is for and why it is outdated, and a **Remove** button that asks before it removes the
+key. An application that checks its key attestation itself may fail once the old keybox of its
+key is revoked; removing that key there fixes it, at the cost of setting the application up
+again.
 
 ## Attestation
 
@@ -65,6 +121,9 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
 - Importing a file turns off the automatic refresh of that file, so that it is kept.
 - **Spoof flags**: each flag can be left at its recommended value, or forced on or off. The value
   applied and the value the module reads now are shown; a red value was changed by another script.
+- **Outdated keys**: the keys made with a keybox or security patch that is no longer configured,
+  whether the next repair removes them, and a **Remove** button for those the settings keep (see
+  "Outdated keys" above).
 - **Modules**: name, version, author and state of both modules, with their releases and a zip
   installer.
 - **Conflicts**: modules that change the same things (other keystore simulators, other Play
@@ -75,9 +134,12 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
 ## Targets
 
 The applications whose keys TEESimulator-RS attests (`target.txt`). Google Play services, its
-framework and the Play Store are always targets; installed third-party applications and wallet
-applications are added automatically; Xposed managers are always left out.
+framework and the Play Store are always targets; Xposed managers are always left out.
 
+- **Targets**: which installed applications are added automatically: Google Play only, Google
+  Play and wallet applications, or all applications (every third-party application and the
+  wallet applications; the default). An application that checks key attestation itself passes
+  only as a target; one that is not a target keeps the device's own keystore.
 - **Key handling**: Automatic, Generate or Patch, for every target but Google Play.
 - **Key handling of Google Play**: the same choice for Play services, its framework and the Play
   Store. Generate is the default and is recommended (TEESimulator-RS documents
@@ -98,13 +160,16 @@ Without it, the list follows the installed applications at the next refresh or r
 ## Settings
 
 - **Privilege**: Automatic (Sui or Shizuku as root first, then `su`), Shizuku/Sui only, or `su` only.
-- **Refresh**: whether the keybox and the fingerprint are refreshed, the interval of the scheduled
-  refresh (off, 3, 6, 12 or 24 hours), and whether it waits for an unmetered network.
+- **Protection** and **Outdated keys**: see "Protection" above.
+- **Refresh**: whether the keybox and the fingerprint are refreshed, when a downloaded keybox
+  replaces the installed one (below), the interval of the scheduled refresh (off, 3, 6, 12 or 24
+  hours), and whether it waits for an unmetered network.
 - **Sources**: the HTTPS URLs of the keybox and the fingerprint, and further keybox URLs tried in
   order when the first cannot be downloaded or serves a worse keybox. The keybox may be served as
   XML or base64 of it. Everything downloaded is checked by the engine before it is installed.
-- **Applying**: whether a change restarts the keystore and ends the Play processes at once, and a
-  button that restarts them now.
+- **Applying**: whether a change restarts the keystore and ends the Play processes at once,
+  whether a restart also ends every background application (so that other targets ask for their
+  keys again at once), and a button that restarts them now.
 - **Boot**: the boot hook (the root manager runs the engine before the keystore daemon starts),
   **Add new apps at once** (the boot hook also runs the package watcher, which updates the target
   list when an application is installed or removed; it needs the boot hook), and the repair the
@@ -113,7 +178,19 @@ Without it, the list follows the installed applications at the next refresh or r
 
 ## How a keybox is installed
 
-A refresh installs a downloaded keybox only when it is at least as good as the installed one:
+**Replace the keybox** (Settings → Refresh) decides when a downloaded keybox replaces the
+installed one:
+
+- **When needed** (the default): only when the installed keybox has no usable EC key, or will not
+  have one at the end of the expiry margin (48 hours by default; 72 or 168 can be chosen, all longer than the longest scheduled refresh):
+  it is missing, revoked, untrusted, or about to expire. A working keybox is kept, so the keys made
+  with it stay current, and the other sources are not asked. Revocation is seen only with Google's
+  certificate status list; while it cannot be downloaded (for up to a week a copy is used), a
+  revoked keybox is replaced only once it expires.
+- **Whenever not worse**: whenever the downloaded keybox is not worse than the installed one, before
+  the installed one can leak and be revoked. Every change outdates the keys made with the old one.
+
+In both, a downloaded keybox is installed only when it is at least as good as the installed one:
 it must have a usable EC key if the installed one has one, and, when both or neither have one,
 at least as many usable keys. A keybox
 that a mirror serves revoked, expired or untrusted is therefore kept out, and the next source is
@@ -138,7 +215,8 @@ RSA requests with the EC key when there is no RSA key.
 Replay Integrity writes the configuration the modules read: `keybox.xml`, `target.txt` and
 `security_patch.txt` under `/data/adb/tricky_store/`, and the module's `custom.pif.prop`. Its own
 data lives in `/data/adb/replay-integrity/`: its state, the settings applied last (which the boot
-hook applies), the installed fingerprint, the keybox replaced last, its log, the copy of the
+hook applies), the certificate status list applied last (with which the boot hook judges
+outdated keys), the installed fingerprint, the keybox replaced last, its log, the copy of the
 engine that the boot hook runs, and the lock of the package watcher (`watch.lock`, which holds its
 process ID). The boot hook is `replay-integrity.sh` in `post-fs-data.d` (Magisk) or `post-mount.d`
 (KernelSU, APatch), and, for the package watcher, in `service.d`.

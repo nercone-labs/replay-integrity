@@ -36,11 +36,15 @@ class EngineModelsTest {
          "spoof":[["spoofBuild",true],["spoofProvider",false]],
          "securityPatch":"system=2026-11-05",
          "targets":{"targets":[{"package":"com.google.android.gms","mode":"auto"},{"package":"com.example","mode":"generate"}]},
-         "persistedKeys":3,"staleKeys":[{"uid":10123,"alias":"key"}],
+         "persistedKeys":3,
+         "outdatedKeys":[
+           {"uid":10140,"alias":"integrity.api.key.alias","category":"integrity","packages":["com.android.vending"],"reasons":[{"kind":"oldKeybox","unusable":false},{"kind":"oldPatch"}],"removedByRepair":true},
+           {"uid":10150,"alias":"tapandpay","category":"play","packages":["com.google.android.gms"],"reasons":[{"kind":"oldKeybox","unusable":true}],"removedByRepair":false}],
          "daemon":{"daemons":[1234],"supervisors":[1200]},
          "bootHook":{"managers":["magisk"],"scripts":["/data/adb/post-fs-data.d/replay-integrity.sh"]},
          "appliedAt":1700000100,"bootedAt":null,
-         "settings":{"extraPackages":["com.extra"],"excludedPackages":[],"targetMode":"auto","spoofOverrides":[["spoofProvider",true]]},
+         "settings":{"extraPackages":["com.extra"],"excludedPackages":[],"targetScope":"playAndWallets","targetMode":"auto","spoofOverrides":[["spoofProvider",true]],
+           "keyRemoval":{"integrity":"whenReplaced","play":"whenUnusable","applications":"never","integrityPatch":false},"endBackgroundApplications":true},
          "missingCapabilities":[],"strongReady":false,"aFieldOfALaterEngine":1}
     """.trimIndent()
 
@@ -62,7 +66,17 @@ class EngineModelsTest {
         assertEquals("revoked", keybox.keys[1].problems[0].name)
         assertEquals("missing", report.integrity!!.problems[0].name)
         assertEquals(listOf(Target("com.google.android.gms"), Target("com.example", TargetMode.GENERATE)), report.targets!!.targets)
-        assertEquals(listOf(PersistedKey(10123, "key")), report.staleKeys)
+        val integrity = OutdatedKey(
+            10140, "integrity.api.key.alias", KeyCategory.INTEGRITY, listOf("com.android.vending"),
+            listOf(OutdatedReason(OutdatedReason.OLD_KEYBOX), OutdatedReason(OutdatedReason.OLD_PATCH)), removedByRepair = true,
+        )
+        assertEquals(listOf(integrity), report.staleKeys)
+        val kept = report.keptKeys.single()
+        assertEquals(KeyCategory.PLAY, kept.category)
+        assertEquals(listOf(OutdatedReason(OutdatedReason.OLD_KEYBOX, unusable = true)), kept.reasons)
+        assertEquals(TargetScope.PLAY_AND_WALLETS, report.settings.targetScope)
+        assertEquals(KeyRemovalSettings(KeyRemoval.WHEN_REPLACED, KeyRemoval.WHEN_UNUSABLE, KeyRemoval.NEVER, integrityPatch = false), report.settings.keyRemoval)
+        assertTrue(report.settings.endBackgroundApplications)
         assertTrue(report.daemon.running)
         assertTrue(report.bootHook.installed)
         assertNull(report.bootedAt)
@@ -100,9 +114,10 @@ class EngineModelsTest {
     fun anInstallReportSaysWhyAKeyboxWasDeclined() {
         val report = json.decodeFromString(
             InstallReport.serializer(),
-            """{"sha256":"ab","changed":false,"verdict":null,"droppedKeys":1,"declined":"the installed keybox is better","fingerprint":null}""",
+            """{"sha256":"ab","changed":false,"verdict":null,"droppedKeys":1,"declined":"worse","fingerprint":null}""",
         )
-        assertEquals("the installed keybox is better", report.declined)
+        assertEquals(Declined.WORSE, report.declined)
+        assertEquals(Declined.NOT_NEEDED, json.decodeFromString(InstallReport.serializer(), """{"sha256":"ab","declined":"notNeeded"}""").declined)
         assertEquals(1, report.droppedKeys)
         assertFalse(report.changed)
         assertNull(json.decodeFromString(InstallReport.serializer(), """{"sha256":"ab","changed":true,"declined":null}""").declined)
@@ -127,6 +142,21 @@ class EngineModelsTest {
         // A Rust tuple is a two-element array.
         assertEquals(JsonArray(listOf(JsonArray(listOf(JsonPrimitive("spoofProvider"), JsonPrimitive(true))))), encoded["spoofOverrides"])
         assertEquals(JsonArray(listOf(JsonPrimitive("com.extra"))), encoded["extraPackages"])
+        // The defaults of the engine's `Settings`, with serde's names.
+        assertEquals(JsonPrimitive("allApplications"), encoded["targetScope"])
+        assertEquals(JsonPrimitive(false), encoded["endBackgroundApplications"])
+        val removal = encoded["keyRemoval"]!!.jsonObject
+        assertEquals(JsonPrimitive("whenReplaced"), removal["integrity"])
+        assertEquals(JsonPrimitive("never"), removal["play"])
+        assertEquals(JsonPrimitive("never"), removal["applications"])
+        assertEquals(JsonPrimitive(true), removal["integrityPatch"])
+    }
+
+    @Test
+    fun keyboxPoliciesAreTheEnginesArguments() {
+        assertEquals(listOf("--policy", "replace"), KeyboxPolicy.Replace.arguments())
+        assertEquals(listOf("--policy", "no-downgrade"), KeyboxPolicy.NoDowngrade.arguments())
+        assertEquals(listOf("--policy", "when-needed", "--expiry-margin", "48"), KeyboxPolicy.WhenNeeded(48).arguments())
     }
 
     @Test
@@ -137,17 +167,21 @@ class EngineModelsTest {
         assertFalse(one.sameAs(other.copy(targetMode = TargetMode.GENERATE)))
         assertFalse(one.sameAs(other.copy(playTargetMode = TargetMode.AUTO)))
         assertFalse(one.sameAs(other.copy(spoofOverrides = listOf(EngineSettings.override("spoofBuild", false)))))
+        assertFalse(one.sameAs(other.copy(targetScope = TargetScope.PLAY)))
+        assertFalse(one.sameAs(other.copy(keyRemoval = KeyRemovalSettings(play = KeyRemoval.WHEN_REPLACED))))
+        assertFalse(one.sameAs(other.copy(endBackgroundApplications = true)))
     }
 
     @Test
     fun anApplyReportAndAnErrorDecode() {
         val response = json.decodeFromString(
             EngineResponse.serializer(),
-            """{"ok":true,"result":{"targets":12,"targetsRebuilt":false,"securityPatch":null,"spoof":[["spoofBuild",true]],"staleKeysRemoved":2,"daemonRestarted":true},"log":[{"time":1,"level":"warning","message":"m"}]}""",
+            """{"ok":true,"result":{"targets":12,"targetsRebuilt":false,"securityPatch":null,"spoof":[["spoofBuild",true]],"staleKeysRemoved":2,"outdatedKeysKept":3,"daemonRestarted":true},"log":[{"time":1,"level":"warning","message":"m"}]}""",
         )
         val report = json.decodeFromJsonElement(ApplyReport.serializer(), response.result!!)
         assertEquals(12, report.targets)
         assertEquals(2, report.staleKeysRemoved)
+        assertEquals(3, report.outdatedKeysKept)
         assertEquals(LogLevel.WARNING, response.log.single().level)
         val failure = json.decodeFromString(EngineResponse.serializer(), """{"ok":false,"error":{"kind":"restricted","message":"no caps"},"log":[]}""")
         assertEquals(EngineException.RESTRICTED, failure.error!!.kind)

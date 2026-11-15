@@ -9,13 +9,17 @@ import androidx.lifecycle.viewModelScope
 import dev.nercone.replayintegrity.Replay
 import dev.nercone.replayintegrity.ReplayApplication
 import dev.nercone.replayintegrity.boot.RefreshWorker
+import dev.nercone.replayintegrity.config.Protection
 import dev.nercone.replayintegrity.config.Settings
 import dev.nercone.replayintegrity.engine.Component
 import dev.nercone.replayintegrity.engine.EngineException
+import dev.nercone.replayintegrity.engine.KeyRemovalReport
 import dev.nercone.replayintegrity.engine.LogLine
 import dev.nercone.replayintegrity.engine.Module
+import dev.nercone.replayintegrity.engine.OutdatedKey
 import dev.nercone.replayintegrity.engine.StatusReport
 import dev.nercone.replayintegrity.engine.TargetMode
+import dev.nercone.replayintegrity.engine.TargetScope
 import dev.nercone.replayintegrity.net.Downloader
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import dev.nercone.replayintegrity.privilege.PrivilegeSelection
@@ -28,7 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** An operation the user started, shown while it runs. Only one runs at a time. */
-enum class Operation { PREPARING, CHECKING, REFRESHING, REPAIRING, RESTARTING, INSPECTING, INSTALLING, INSTALLING_MODULE, CONFIGURING_BOOT, DISABLING_CONFLICTS }
+enum class Operation { PREPARING, CHECKING, REFRESHING, REPAIRING, RESTARTING, INSPECTING, INSTALLING, INSTALLING_MODULE, CONFIGURING_BOOT, DISABLING_CONFLICTS, REMOVING_KEY }
 
 /** What the user is told about the last operation. */
 sealed interface Outcome {
@@ -38,6 +42,7 @@ sealed interface Outcome {
     data class Restarted(val restarted: Boolean) : Outcome
     data class ModuleInstalled(val output: String) : Outcome
     data class ConflictsDisabled(val modules: List<Module>) : Outcome
+    data class KeyRemoved(val report: KeyRemovalReport) : Outcome
 
     /** `kind` is the kind of the engine error, such as `restricted`, or `null` for other errors. */
     data class Failed(val text: String, val kind: String?) : Outcome {
@@ -175,6 +180,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         check()
     }
 
+    /** Removes an outdated key that the settings keep; the user confirmed losing what was enrolled with it. */
+    fun removeKey(key: OutdatedKey) = run(Operation.REMOVING_KEY) {
+        val result = replay.removeKey(key)
+        state.update { it.copy(outcome = Outcome.KeyRemoved(result.value), log = result.log) }
+        check()
+    }
+
     /** Loads the installed applications once, for the labels of the target list. */
     fun loadApps() {
         if (state.value.apps != null) return
@@ -218,6 +230,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setTargetMode(mode: TargetMode) = configure { it.copy(targetMode = mode) }
+
+    fun setTargetScope(scope: TargetScope) = configure { it.copy(targetScope = scope) }
+
+    /** Sets every setting of `protection`; the user can adjust each one afterwards. */
+    fun setProtection(protection: Protection) = configure { protection.applyTo(it) }
 
     fun setPlayTargetMode(mode: TargetMode) = configure { it.copy(playTargetMode = mode) }
 

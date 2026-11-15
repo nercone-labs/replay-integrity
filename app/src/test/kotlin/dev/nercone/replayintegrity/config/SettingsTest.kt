@@ -1,8 +1,13 @@
 package dev.nercone.replayintegrity.config
 
+import dev.nercone.replayintegrity.engine.KeyRemoval
+import dev.nercone.replayintegrity.engine.KeyRemovalSettings
+import dev.nercone.replayintegrity.engine.KeyboxPolicy
 import dev.nercone.replayintegrity.engine.TargetMode
+import dev.nercone.replayintegrity.engine.TargetScope
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -67,5 +72,53 @@ class SettingsTest {
         assertEquals(mapOf("spoofBuild" to false), engine.overrides())
         assertEquals(TargetMode.GENERATE, engine.playTargetMode)
         assertEquals(TargetMode.AUTO, Settings.Values(playTargetMode = TargetMode.AUTO).engine().playTargetMode)
+    }
+
+    @Test
+    fun aDocumentOfAnEarlierVersionReadsAsTheBalancedProtection() {
+        // A user who never changed these settings keeps the safe defaults after the update.
+        val values = Settings.decode("""{"privilege":"ROOT","applied":true,"restartOnChange":true}""")
+        assertEquals(Protection.BALANCED, Protection.of(values))
+        assertEquals(Protection.DEFAULT, Protection.of(Settings.Values()))
+    }
+
+    @Test
+    fun theDefaultsKeepEveryKeyThatMayHoldWhatTheUserEnrolled() {
+        val values = Settings.Values()
+        assertEquals(KeyRemoval.WHEN_REPLACED, values.keyRemoval.integrity)
+        assertEquals(KeyRemoval.NEVER, values.keyRemoval.play)
+        assertEquals(KeyRemoval.NEVER, values.keyRemoval.applications)
+        assertEquals(Settings.KeyboxReplacement.WHEN_NEEDED, values.keyboxReplacement)
+        assertEquals(KeyboxPolicy.WhenNeeded(Settings.DEFAULT_EXPIRY_MARGIN_HOURS), values.keyboxPolicy())
+        assertEquals(KeyboxPolicy.NoDowngrade, values.copy(keyboxReplacement = Settings.KeyboxReplacement.NO_DOWNGRADE).keyboxPolicy())
+    }
+
+    @Test
+    fun aProtectionSetsItsSettingsAndKeepsTheOthers() {
+        val values = Settings.Values(refreshHours = 12, extraPackages = listOf("com.example"))
+        for (protection in Protection.entries) {
+            val chosen = protection.applyTo(values)
+            assertEquals(protection, Protection.of(chosen))
+            assertEquals(12, chosen.refreshHours)
+            assertEquals(listOf("com.example"), chosen.extraPackages)
+        }
+        val integrity = Protection.INTEGRITY.applyTo(values)
+        assertEquals(KeyRemovalSettings(KeyRemoval.WHEN_REPLACED, KeyRemoval.WHEN_REPLACED, KeyRemoval.WHEN_REPLACED, integrityPatch = true), integrity.keyRemoval)
+        assertEquals(TargetScope.PLAY_AND_WALLETS, Protection.SAFETY.applyTo(values).targetScope)
+    }
+
+    @Test
+    fun anAdjustedSettingMatchesNoProtection() {
+        val adjusted = Protection.BALANCED.applyTo(Settings.Values()).let { it.copy(keyRemoval = it.keyRemoval.copy(play = KeyRemoval.WHEN_UNUSABLE)) }
+        assertNull(Protection.of(adjusted))
+    }
+
+    @Test
+    fun theEngineReceivesTheSafetySettings() {
+        val values = Settings.Values(targetScope = TargetScope.PLAY, endBackgroundApplications = true, keyRemoval = KeyRemovalSettings(applications = KeyRemoval.WHEN_UNUSABLE))
+        val engine = values.engine()
+        assertEquals(TargetScope.PLAY, engine.targetScope)
+        assertTrue(engine.endBackgroundApplications)
+        assertEquals(KeyRemoval.WHEN_UNUSABLE, engine.keyRemoval.applications)
     }
 }

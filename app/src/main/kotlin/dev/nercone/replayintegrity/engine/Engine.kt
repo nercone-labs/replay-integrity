@@ -99,27 +99,32 @@ class Engine(val context: Context) {
         run(listOf("inspect-fingerprint", file.absolutePath), FingerprintReport.serializer())
 
     /**
-     * Installs a keybox. With `noDowngrade`, the engine keeps the installed keybox when the
-     * offered one ranks below it, and says why in `InstallReport.declined`.
+     * Installs a keybox as `policy` says (`KeyboxPolicy` of the engine). When the policy keeps
+     * the installed keybox, the engine says why in `InstallReport.declined`.
      */
-    suspend fun installKeybox(privilege: Privilege, file: File, source: String?, statusList: File?, noDowngrade: Boolean): EngineResult<InstallReport> {
-        val arguments = listOf("install-keybox", file.absolutePath) + sourceArguments(source) + statusArguments(statusList) + (if (noDowngrade) listOf("--no-downgrade") else emptyList())
+    suspend fun installKeybox(privilege: Privilege, file: File, source: String?, statusList: File?, policy: KeyboxPolicy): EngineResult<InstallReport> {
+        val arguments = listOf("install-keybox", file.absolutePath) + sourceArguments(source) + statusArguments(statusList) + policy.arguments()
         return run(privilege, arguments, InstallReport.serializer())
     }
 
     suspend fun installFingerprint(privilege: Privilege, file: File, source: String?, settings: EngineSettings): EngineResult<InstallReport> =
         run(privilege, listOf("install-fingerprint", file.absolutePath) + sourceArguments(source) + settingsArguments(settings), InstallReport.serializer())
 
-    suspend fun apply(privilege: Privilege, settings: EngineSettings, restart: Boolean): EngineResult<ApplyReport> {
-        val arguments = listOf("apply") + (if (restart) emptyList() else listOf("--no-restart")) + settingsArguments(settings)
+    /**
+     * Applies `settings`. Persisted keys are judged with `statusList`, which the engine keeps
+     * for the boot hook; without it, with the copy it kept last.
+     */
+    suspend fun apply(privilege: Privilege, settings: EngineSettings, restart: Boolean, statusList: File?): EngineResult<ApplyReport> {
+        val arguments = listOf("apply") + (if (restart) emptyList() else listOf("--no-restart")) + settingsArguments(settings) + statusArguments(statusList)
         return run(privilege, arguments, ApplyReport.serializer(), LONG_TIMEOUT_MILLIS)
     }
 
-    suspend fun restart(privilege: Privilege): EngineResult<RestartReport> =
-        run(privilege, listOf("restart"), RestartReport.serializer(), LONG_TIMEOUT_MILLIS)
+    suspend fun restart(privilege: Privilege, settings: EngineSettings): EngineResult<RestartReport> =
+        run(privilege, listOf("restart") + settingsArguments(settings), RestartReport.serializer(), LONG_TIMEOUT_MILLIS)
 
-    suspend fun staleKeys(privilege: Privilege): EngineResult<List<PersistedKey>> =
-        run(privilege, listOf("stale-keys"), ListSerializer(PersistedKey.serializer()))
+    /** Removes the outdated keys of `uid` under `alias`, whatever the settings keep. */
+    suspend fun removeKey(privilege: Privilege, uid: Long, alias: String, statusList: File?): EngineResult<KeyRemovalReport> =
+        run(privilege, listOf("remove-key", "--uid", uid.toString(), "--alias", alias) + statusArguments(statusList), KeyRemovalReport.serializer())
 
     suspend fun installModule(privilege: Privilege, component: Component, zip: File): EngineResult<ModuleOutput> =
         run(privilege, listOf("install-module", component.argument, zip.absolutePath), ModuleOutput.serializer(), LONG_TIMEOUT_MILLIS)
@@ -167,3 +172,23 @@ class Engine(val context: Context) {
 
 @kotlinx.serialization.Serializable
 data class VersionReport(val version: String)
+
+/** When `installKeybox` replaces the installed keybox (`KeyboxPolicy` of the engine). */
+sealed interface KeyboxPolicy {
+    fun arguments(): List<String>
+
+    /** Always: the user chose the file. */
+    data object Replace : KeyboxPolicy {
+        override fun arguments() = listOf("--policy", "replace")
+    }
+
+    /** Whenever the offered keybox ranks at least as high as the installed one. */
+    data object NoDowngrade : KeyboxPolicy {
+        override fun arguments() = listOf("--policy", "no-downgrade")
+    }
+
+    /** Only when the installed keybox has no usable EC key `marginHours` from now, and not with a worse one. */
+    data class WhenNeeded(val marginHours: Int) : KeyboxPolicy {
+        override fun arguments() = listOf("--policy", "when-needed", "--expiry-margin", marginHours.toString())
+    }
+}

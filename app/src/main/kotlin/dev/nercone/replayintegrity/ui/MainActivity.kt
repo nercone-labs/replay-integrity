@@ -192,6 +192,7 @@ object ReplayApp {
             Operation.INSTALLING_MODULE -> R.string.operation_installing_module
             Operation.CONFIGURING_BOOT -> R.string.operation_configuring_boot
             Operation.DISABLING_CONFLICTS -> R.string.operation_disabling_conflicts
+            Operation.REMOVING_KEY -> R.string.operation_removing_key
         },
     )
 }

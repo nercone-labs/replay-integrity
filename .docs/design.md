@@ -198,11 +198,14 @@ Replay Integrity had the same gap: `stale_keys` compared only the signer of each
 
 ### What the engine does now
 
-`Engine::stale_keys` also counts as stale the key of the Play Integrity API when its attested OS,
-vendor or boot patch level differs from the configured patch. That key is one whose alias is in
-`Engine::INTEGRITY_KEY_ALIASES` (today `integrity.api.key.alias`, the key of the Play Store seen
-in "Device keys under the alias of a stale key") and whose `attestationApplicationId` names a
-package of the Play stack (`TargetList::ALWAYS`). The configured patch is read back from
+`Engine::outdated_keys` also counts as outdated (`OutdatedReason::OldPatch`) the key of the Play
+Integrity API when its attested OS, vendor or boot patch level differs from the configured patch.
+That key (`KeyCategory::Integrity`) is one whose alias is in `KeyCategory::INTEGRITY_ALIASES`
+(today `integrity.api.key.alias`, the key of the Play Store seen in "Device keys under the alias
+of a stale key") and whose packages, from its `attestationApplicationId` or from the package
+list by its user, include a package of the Play stack (`TargetList::ALWAYS`). Whether a repair
+removes it is a setting (`KeyRemovalSettings::integrity_patch`, on by default; see "Safety and
+integrity as settings"). The configured patch is read back from
 `security_patch.txt` with `KeystoreConfig::security_patch_of`, the inverse of
 `security_patch_contents`. `apply` writes the patch of the installed fingerprint before it looks
 for stale keys, so a refresh that brings a new patch removes the key in the same run, and the
@@ -233,6 +236,109 @@ Play Store makes it again with the new patch.
   integrity key only" above.
 - **Changing TEESimulator-RS to re-sign persisted chains when the patch changes.** That is a
   change to the module, not something its configuration can express.
+
+## Safety and integrity as settings
+
+### What was asked
+
+A user asked whether a keybox update, or the refresh and repair after a monthly security patch,
+resets NFC payments. Reading the engine answered it: after a monthly patch, no (only the
+integrity key was compared by patch); after a keybox change, very likely yes.
+
+### Why a keybox change reset payments
+
+- `stale_keys` counted as stale **every** persisted key whose chain was signed by a key not in
+  the current keybox, whatever the application. The Play stack generates its keys (`Generate`),
+  so every key of Play services was among them, and Google Wallet's tap-and-pay tokens, passkeys
+  and Find Hub keys live in Play services. Banking and wallet applications that TEESimulator-RS
+  generated keys for were among them as well. Each such key was deleted, with what was enrolled
+  with it.
+- `NoDowngrade` installed a keybox whenever it ranked **at least as high** as the installed one.
+  The mirror replaces its keybox every few days, so a working keybox was replaced every few days,
+  and every replacement outdated every key.
+- The removal did not ask whether the old chain had stopped working. A key on a keybox that is
+  merely replaced keeps passing attestation until that keybox is revoked or expires.
+
+That this reset payments was not reproduced on a device; it follows from the code and from where
+Google Wallet keeps its tokens.
+
+### What the engine does now
+
+Every choice that trades the user's data, or the device's quiet, against how surely and how
+quickly STRONG is reached is a setting, with a default that is the safe choice that still reaches
+STRONG almost surely:
+
+- **Which outdated keys a repair removes** (`KeyRemovalSettings`), by `KeyCategory`: the
+  integrity key, the other keys of the Play stack, and every other application's keys. Each is
+  `KeyRemoval::Never`, `WhenUnusable` (the old chain is known to fail: `PersistedKey::signer_problems`
+  reports a problem of the certificates after the key's own, which are those of the keybox key
+  that signed it) or `WhenReplaced` (as before). Defaults: `WhenReplaced` for the integrity key,
+  `Never` for the others. A key whose packages cannot be told is an application's, the most
+  careful category. `integrity_patch` keeps the security-patch rule switchable.
+- **Kept keys stay visible and removable.** `Engine::outdated_keys` reports every outdated key
+  with its category, packages, reasons and whether a repair removes it (`OutdatedKey`);
+  `ApplyReport::outdated_keys_kept` counts those kept. `remove-key --uid --alias`
+  (`Engine::remove_key`) removes one the settings keep, through the keystore as a repair would,
+  under the lock of `apply`, and refuses any key that is not outdated. The alias is compared as
+  reported, so a key whose alias is not read exactly can be removed too; its file alone goes.
+- **The device's key of a non-target is never deleted.** A narrower `TargetScope` leaves
+  persisted keys of applications that are no longer targets. TEESimulator-RS passes their
+  deletion to keystore2, which would delete the application's own key under the alias, so
+  `remove_stale_key` removes the file alone unless a package of the key is in `target.txt`, as it
+  does while the module is not active.
+- **When a downloaded keybox replaces the installed one** (`KeyboxPolicy::WhenNeeded`, the
+  application's default): only when the installed keybox will not have a usable EC key at the end
+  of a margin (48 hours by default, longer than the longest scheduled refresh), and never with a
+  worse one. The decision is `KeyboxPolicy::declines`, so that it is tested without a
+  Google-signed keybox. `Declined::NotNeeded` tells the application that the installed keybox is
+  fine, so it stops asking the other sources.
+- **The certificate status list for the boot hook.** `WhenUnusable` needs revocation, and the
+  boot hook runs without the application. `apply` saves the list it is given in the store
+  (`Store::status_list`) when it parses, and runs given none, or one that does not parse, judge
+  with that copy. A copy misses later revocations, which only keeps keys. A repair and the
+  removal of a key pass the application's cached copy and download nothing, as a repair is
+  documented to.
+- **Which applications are targets** (`TargetScope`): the Play stack only, with the wallet
+  applications, or with every third-party application (the default, as before).
+- **Whether a restart ends every background application** (`Settings::end_background_applications`,
+  off by default). Play Integrity needs only `REFRESH_PROCESSES` ended; `kill_background` ended
+  every background application on every restart before.
+
+The application groups these into three protections (`Protection`): `SAFETY`, `BALANCED` (the
+defaults) and `INTEGRITY`. Choosing one sets every setting it names; the settings then match no
+protection once one is changed, and the screen says "Custom". The protection is not stored: it is
+read from the settings, so it can never disagree with them.
+
+### Why these defaults
+
+- **The integrity key is removed when replaced in every protection.** It holds nothing of the
+  user's, the Play Store makes it again, and a key on an old chain fails Play Integrity
+  (cause 4). There is nothing to trade.
+- **Other keys of the Play stack are kept by default.** Play Integrity attests a key made for the
+  request, with a fresh challenge; a key that is reused with an old chain, as the integrity key
+  is, is what makes it fail. That no other key of Play services is reused this way was not
+  established on a device. If one is, `WhenUnusable` or `WhenReplaced` for the Play stack brings
+  STRONG back at the cost of the cards, and `INTEGRITY` sets it.
+- **`WhenNeeded` for the keybox.** With it the keybox changes mostly because it had to (revoked,
+  expiring), so the integrity key is renewed rarely and the other keys stay current. A mirror's
+  newer keybox would avoid the window between a revocation and the next refresh; the scheduled
+  refresh (6 hours by default) and the status list cached for an hour bound that window.
+- **`SAFETY` keeps the Play stack's keys in the device's keystore (`Auto`).** Keys that
+  TEESimulator-RS generates are kept in files under `/data/adb`, outside the secure hardware.
+  `Auto` patches the certificates of the device's own keys while that keystore works, so the
+  keys stay in hardware; STRONG then depends on the device's keystore, which is why it is not
+  the default. It also leaves third-party applications out of the targets and restarts nothing.
+
+### Alternatives that were set aside
+
+- **One switch between "safe" and "integrity".** The choices are independent (a user may accept
+  losing a bank's enrolment but not cards), and the user asked to adjust everything.
+- **The protections in the engine.** The engine reads settings, not intentions; a protection is a
+  way to choose settings, and the boot hook applies the settings that were chosen. Keeping it in
+  the application keeps the engine's settings a plain description of what it does.
+- **Remembering the signers of earlier keyboxes** to judge an old chain. The persisted key holds
+  that chain already; judging the chain itself also covers a keybox that another tool installed.
+- **Removing the other Play keys by patch too.** See "Persisted keys and the security patch".
 
 ## Keyboxes as mirrors serve them
 
@@ -300,7 +406,7 @@ No conforming XML parser reads a key from that document:
   `KeyboxDocument::render` of the keys, which every XML parser reads, and only the usable keys
   when there are any (`KeyboxVerdict::keys_to_write`), so the daemon cannot prefer a revoked RSA
   key to a usable EC key. The daemon reads exactly what was checked.
-- **Never downgrade on an automatic refresh.** With `--no-downgrade` (`KeyboxPolicy::NoDowngrade`)
+- **Never downgrade on an automatic refresh.** With `--policy no-downgrade` (`KeyboxPolicy::NoDowngrade`, and `WhenNeeded`, which adds to it)
   a keybox is installed only when it ranks at least as high as the installed one
   (`KeyboxVerdict::rank`: a usable EC key, then the number of usable keys). `defect` is not part
   of the rank on either side: the offered keybox is written again before it is installed, and an
@@ -316,7 +422,8 @@ No conforming XML parser reads a key from that document:
   cannot leave it worse off. Every recovered key is written, because no key is judged without
   the status list, and the original is kept in the store as the previous keybox.
 - **Several sources.** The application tries the keybox URL and then the further URLs of the
-  settings in order, until the engine installs one or finds it is the installed one. A declined
+  settings in order, until the engine installs one, finds it is the installed one, or keeps the
+  installed one because it is not to be replaced yet (`Declined::NotNeeded`). A declined
   keybox is never a refresh problem: the installed one is better, which is the device as it
   should be, and a problem would make the scheduled refresh retry and notify a failure every
   time a mirror serves a worse keybox. A source that cannot be downloaded or checked is a problem
@@ -475,7 +582,8 @@ The app keeps its settings as one JSON document (`Settings.Values`) rather than 
 per field, so that a change is written whole and fields can be added without migration code;
 unknown fields are ignored and unknown enum values fall back to defaults, so both newer and older
 versions read the document. Only the part the engine uses (`EngineSettings`: extra and excluded
-packages, target mode, spoof overrides) is passed with `--settings`; the engine rejects package
+packages, target scope and modes, spoof overrides, key removal, ending background applications)
+is passed with `--settings`; the engine rejects package
 names that are not package names, because they are written line by line into `target.txt`, and
 overrides of unknown flags. The app compares the settings it would apply with those the engine
 saved and shows "changes not applied yet" until they match.
@@ -491,7 +599,8 @@ The sources are settings, so the user is not tied to one mirror. Only HTTPS is a
 for redirects. A keybox may be served as XML or as base64 of it (the default mirror serves
 base64); anything else is refused before it reaches the engine. The certificate status list is
 cached for an hour; when it cannot be downloaded, a copy up to a week old is used, and without one
-the engine reports that revocation was not checked. A failed download never stops the apply:
+the engine reports that revocation was not checked. `apply` keeps a copy in the store for the boot
+hook (see "Safety and integrity as settings"). A failed download never stops the apply:
 the installed files stay.
 
 Restarting the keystore ends the Play processes, so a refresh restarts only when an input changed

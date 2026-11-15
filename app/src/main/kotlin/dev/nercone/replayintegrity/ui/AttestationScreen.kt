@@ -41,8 +41,11 @@ import dev.nercone.replayintegrity.config.Settings
 import dev.nercone.replayintegrity.engine.Component
 import dev.nercone.replayintegrity.engine.FingerprintReport
 import dev.nercone.replayintegrity.engine.InstalledFile
+import dev.nercone.replayintegrity.engine.KeyCategory
 import dev.nercone.replayintegrity.engine.KeyVerdict
 import dev.nercone.replayintegrity.engine.KeyboxVerdict
+import dev.nercone.replayintegrity.engine.OutdatedKey
+import dev.nercone.replayintegrity.engine.OutdatedReason
 import dev.nercone.replayintegrity.engine.SpoofFlag
 import dev.nercone.replayintegrity.engine.StatusReport
 
@@ -88,6 +91,12 @@ object AttestationScreen {
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
 
+            if (status != null && status.outdatedKeys.isNotEmpty()) {
+                Widgets.Header(stringResource(R.string.section_outdated_keys))
+                OutdatedKeys(status.outdatedKeys, idle, model::removeKey)
+                Text(stringResource(R.string.outdated_keys_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
+            }
+
             Widgets.Header(stringResource(R.string.section_fingerprint))
             Fingerprint(status?.fingerprint, status?.fingerprintInstalled)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -115,6 +124,50 @@ object AttestationScreen {
             Text(stringResource(R.string.modules_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
         }
         state.candidate?.let { Candidate(it, onInstall = { model.install(it) }, onDismiss = model::dismissCandidate) }
+    }
+
+    /**
+     * The outdated persisted keys: what each is for, why it is outdated, and whether the next
+     * repair removes it. A key the settings keep can be removed here, once the user confirms
+     * losing what was enrolled with it.
+     */
+    @Composable
+    fun OutdatedKeys(keys: List<OutdatedKey>, idle: Boolean, onRemove: (OutdatedKey) -> Unit) {
+        var confirming by remember { mutableStateOf<OutdatedKey?>(null) }
+        Widgets.Group {
+            keys.forEachIndexed { index, key ->
+                val reasons = key.reasons.map { reason ->
+                    when {
+                        reason.kind == OutdatedReason.OLD_PATCH -> stringResource(R.string.outdated_reason_patch)
+                        reason.unusable -> stringResource(R.string.outdated_reason_keybox_unusable)
+                        else -> stringResource(R.string.outdated_reason_keybox)
+                    }
+                }
+                val supporting = listOfNotNull(
+                    Labels.keyCategory(key.category) + key.packages.takeIf { it.isNotEmpty() }?.let { " · " + it.joinToString(", ") }.orEmpty(),
+                    reasons.joinToString(" · "),
+                    stringResource(if (key.removedByRepair) R.string.outdated_removed_by_repair else R.string.outdated_kept),
+                ).joinToString("\n")
+                Widgets.Item(
+                    index, keys.size,
+                    headline = stringResource(R.string.outdated_key_name, key.alias, key.uid),
+                    supporting = supporting,
+                    icon = Icons.Default.Key,
+                    trailing = if (key.removedByRepair) null else {
+                        { TextButton(onClick = { confirming = key }, enabled = idle) { Text(stringResource(R.string.outdated_remove)) } }
+                    },
+                )
+            }
+        }
+        confirming?.let { key ->
+            Widgets.Confirm(
+                title = stringResource(R.string.outdated_remove_title, key.alias),
+                text = stringResource(if (key.category == KeyCategory.INTEGRITY) R.string.outdated_remove_integrity_text else R.string.outdated_remove_text),
+                confirm = stringResource(R.string.outdated_remove),
+                onConfirm = { onRemove(key) },
+                onDismiss = { confirming = null },
+            )
+        }
     }
 
     @Composable

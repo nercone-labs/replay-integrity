@@ -4,10 +4,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use keybox::KeyboxDocument;
+use keybox::{KeyAlgorithm, KeyboxDocument};
 use replay::{
-    ApplyMode, BootHook, BootReport, Conflicts, Engine, Files, Fingerprint, FingerprintProblem, KeyboxPolicy, KeystoreConfig, Layout, Log, Module,
-    PackageWatcher, PatchDate, PersistedKey, Settings, SpoofFlag, SpoofFlags, Target, TargetList, TargetMode, WatchReport,
+    ApplyMode, BootHook, BootReport, Conflicts, Declined, Engine, Files, Fingerprint, FingerprintProblem, KeyCategory, KeyProblem, KeyRemoval,
+    KeyRemovalSettings, KeyVerdict, KeyboxPolicy, KeyboxVerdict, KeystoreConfig, Layout, Log, Module, OutdatedReason, PackageWatcher, PatchDate, PersistedKey,
+    Settings, SpoofFlag, SpoofFlags, Target, TargetList, TargetMode, TargetScope, WatchReport,
 };
 
 const TEST_KEYBOX: &str = include_str!("../../keybox/tests/fixtures/test-keybox.xml");
@@ -187,14 +188,14 @@ fn apply_writes_a_malformed_installed_keybox_again() {
     let malformed = malformed_keybox();
     fs::write(&keybox_path, &malformed).unwrap();
     let mut engine = Engine::new(layout.clone());
-    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
     assert!(report.keybox_repaired);
     let installed = fs::read_to_string(&keybox_path).unwrap();
     assert_eq!(KeyboxDocument::parse(&installed).unwrap().defect, None);
     assert_eq!(key_material(&installed), key_material(TEST_KEYBOX));
     assert_eq!(fs::read_to_string(layout.store().join("previous-keybox.xml")).unwrap(), malformed);
     // A well-formed keybox is left alone.
-    assert!(!engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap().keybox_repaired);
+    assert!(!engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap().keybox_repaired);
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -219,7 +220,7 @@ fn apply_writes_the_configuration_from_the_installed_fingerprint() {
         "FINGERPRINT=google/p/p:CANARY/A/1:user/release-keys\nMANUFACTURER=Google\nMODEL=Pixel\nBRAND=google\nPRODUCT=p\nDEVICE=p\nSECURITY_PATCH=2026-11-05\n";
     let mut engine = Engine::new(layout.clone());
     engine.install_fingerprint(text.as_bytes(), None, &Settings::default()).unwrap();
-    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
     assert_eq!(report.security_patch.as_deref(), Some("2026-11-05"));
     assert!(!report.daemon_restarted);
     // At boot the target list is kept: the package manager does not run yet.
@@ -315,13 +316,13 @@ fn apply_saves_the_settings_that_boot_applies_again() {
     let settings = Settings { spoof_overrides: vec![("spoofProvider".to_string(), true)], ..Settings::default() };
     let mut engine = Engine::new(layout.clone());
     engine.install_fingerprint(text.as_bytes(), None, &settings).unwrap();
-    engine.apply(&settings, ApplyMode::NoRestart).unwrap();
+    engine.apply(&settings, ApplyMode::NoRestart, None).unwrap();
     assert_eq!(engine.store.settings().unwrap(), settings);
     // Something else (a script of the module) resets the flag; applying the saved settings at boot restores it.
     let pif = layout.modules().join("playintegrityfix/custom.pif.prop");
     fs::write(&pif, fs::read_to_string(&pif).unwrap().replace("spoofProvider=1", "spoofProvider=0")).unwrap();
     let saved = engine.store.settings().unwrap();
-    engine.apply(&saved, ApplyMode::EarlyBoot).unwrap();
+    engine.apply(&saved, ApplyMode::EarlyBoot, None).unwrap();
     assert!(fs::read_to_string(&pif).unwrap().contains("spoofProvider=1"));
     // The fingerprint is kept in the store as it was installed, without flags.
     let stored = fs::read_to_string(layout.store().join("fingerprint.prop")).unwrap();
@@ -664,6 +665,11 @@ fn persisted_key(uid: u32, alias: &[u8], signer: &[u8]) -> Vec<u8> {
 
 /// Like `persisted_key`, with `leaf` as the certificate of the key.
 fn attested_key(uid: u32, alias: &[u8], leaf: &[u8], signer: &[u8]) -> Vec<u8> {
+    persisted_key_with_chain(uid, alias, &[leaf, signer, b"root"])
+}
+
+/// Like `persisted_key`, with `chain` as its certificate chain, from the key to the root.
+fn persisted_key_with_chain(uid: u32, alias: &[u8], chain: &[&[u8]]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let int = |bytes: &mut Vec<u8>, value: i32| bytes.extend_from_slice(&value.to_be_bytes());
     int(&mut bytes, 3);
@@ -676,9 +682,8 @@ fn attested_key(uid: u32, alias: &[u8], leaf: &[u8], signer: &[u8]) -> Vec<u8> {
     for value in [3, 256, 1, 0, 0, 0] {
         int(&mut bytes, value);
     }
-    let chain: [&[u8]; 3] = [leaf, signer, b"root"];
     int(&mut bytes, chain.len() as i32);
-    for certificate in chain {
+    for certificate in chain.iter() {
         int(&mut bytes, certificate.len() as i32);
         bytes.extend_from_slice(certificate);
     }
@@ -696,7 +701,31 @@ fn root_with_a_stale_key(alias: &[u8]) -> (PathBuf, Layout, PathBuf) {
     fs::create_dir_all(&directory).unwrap();
     let key = directory.join("stale.bin");
     fs::write(&key, persisted_key(10_140, alias, b"an old attestation key")).unwrap();
+    // uid 10140 is the Play Store's, so the key is the integrity key, which a repair removes, and
+    // the Play Store is a target, so the keystore is asked to delete it.
+    write_packages_list(&layout, &[("com.android.vending", 10_140)]);
+    fs::write(layout.tricky_store().join("target.txt"), "com.android.vending!\n").unwrap();
     (root, layout, key)
+}
+
+/// Settings that remove every outdated key as soon as its keybox is replaced, for the tests of
+/// how a key is removed: a key under another alias than the integrity key's is kept by default.
+fn removing_every_key() -> Settings {
+    let removal = KeyRemovalSettings {
+        integrity: KeyRemoval::WhenReplaced,
+        play: KeyRemoval::WhenReplaced,
+        applications: KeyRemoval::WhenReplaced,
+        integrity_patch: true,
+    };
+    Settings { key_removal: removal, ..Settings::default() }
+}
+
+/// A package list (`/data/system/packages.list`) of `packages`, by name and application ID.
+fn write_packages_list(layout: &Layout, packages: &[(&str, u32)]) {
+    let path = layout.packages_list();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let lines: String = packages.iter().map(|(name, app_id)| format!("{name} {app_id} 0 /data/user/0/{name} default:targetSdkVersion=36 none 0 0\n")).collect();
+    fs::write(path, lines).unwrap();
 }
 
 /// A keystore client at the device path of `layout` that exits with `status`.
@@ -715,11 +744,11 @@ fn a_stale_key_is_kept_while_the_keystore_cannot_delete_its_alias() {
     let (root, layout, key) = root_with_a_stale_key(b"integrity.api.key.alias");
     keystore_client(&layout, 255);
     let mut engine = Engine::new(layout.clone());
-    assert_eq!(engine.stale_keys().unwrap().len(), 1);
-    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    assert_eq!(engine.stale_keys(&KeyRemovalSettings::default(), None).unwrap().len(), 1);
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
     assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (0, 1));
     assert!(key.exists(), "a key of the device's keystore under that alias would become the application's key");
-    assert_eq!(engine.stale_keys().unwrap().len(), 1);
+    assert_eq!(engine.stale_keys(&KeyRemovalSettings::default(), None).unwrap().len(), 1);
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -727,7 +756,7 @@ fn a_stale_key_is_kept_while_the_keystore_cannot_delete_its_alias() {
 fn a_stale_key_is_removed_without_a_keystore_client() {
     let (root, layout, key) = root_with_a_stale_key(b"integrity.api.key.alias");
     let mut engine = Engine::new(layout.clone());
-    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
     assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
     assert!(!key.exists());
     let _ = fs::remove_dir_all(&root);
@@ -740,9 +769,9 @@ fn an_alias_that_is_not_read_exactly_is_not_given_to_the_keystore() {
     // A client that would keep the key if it were asked.
     keystore_client(&layout, 4);
     let mut engine = Engine::new(layout.clone());
-    let stale = engine.stale_keys().unwrap();
-    assert!(!stale[0].alias_exact);
-    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    let stale = engine.stale_keys(&removing_every_key().key_removal, None).unwrap();
+    assert!(!stale[0].key.alias_exact);
+    let report = engine.apply(&removing_every_key(), ApplyMode::EarlyBoot, None).unwrap();
     assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
     assert!(!key.exists());
     let _ = fs::remove_dir_all(&root);
@@ -763,7 +792,7 @@ fn a_device_key_is_left_alone_while_teesimulator_is_not_active() {
         // A client that would keep the key if it were asked.
         keystore_client(&layout, 4);
         let mut engine = Engine::new(layout.clone());
-        let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+        let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
         assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0), "disable={disable}");
         assert!(!key.exists());
         let _ = fs::remove_dir_all(&root);
@@ -777,7 +806,7 @@ fn an_alias_that_is_not_ascii_is_not_given_to_the_keystore() {
     let (root, layout, key) = root_with_a_stale_key("鍵".as_bytes());
     keystore_client(&layout, 4);
     let mut engine = Engine::new(layout.clone());
-    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    let report = engine.apply(&removing_every_key(), ApplyMode::EarlyBoot, None).unwrap();
     assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
     assert!(!key.exists());
     let _ = fs::remove_dir_all(&root);
@@ -825,7 +854,7 @@ fn root_with_attested_keys(keybox: bool, security_patch: Option<&str>, keys: &[(
 }
 
 fn stale_paths(engine: &Engine) -> Vec<PathBuf> {
-    engine.stale_keys().unwrap().into_iter().map(|key| key.path).collect()
+    engine.stale_keys(&KeyRemovalSettings::default(), None).unwrap().into_iter().map(|outdated| outdated.key.path).collect()
 }
 
 #[test]
@@ -882,7 +911,7 @@ fn an_integrity_key_that_attests_another_patch_is_stale() {
         let (root, layout, keys) = root_with_attested_keys(true, Some(&security_patch(date)), &leaves);
         let mut engine = Engine::new(layout.clone());
         assert_eq!(stale_paths(&engine), keys[..2], "{date}");
-        let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+        let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
         assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (2, 0), "{date}");
         assert!(!keys[0].exists() && !keys[1].exists(), "{date}");
         assert!(keys[2..].iter().all(|key| key.exists()), "{date}");
@@ -903,7 +932,7 @@ fn apply_compares_the_keys_with_the_patch_of_the_installed_fingerprint() {
     // before it compares the keys.
     fs::write(layout.tricky_store().join("security_patch.txt"), security_patch("2026-10-05")).unwrap();
     assert!(stale_paths(&engine).is_empty());
-    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
     assert_eq!(report.security_patch.as_deref(), Some("2026-11-05"));
     assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
     assert!(!keys[0].exists() && keys[1].exists());
@@ -916,7 +945,7 @@ fn an_integrity_key_that_attests_the_configured_patch_is_kept() {
         root_with_attested_keys(true, Some(&security_patch("2026-10-05")), &[(PLAY_KEY_2026_10_05, INTEGRITY), (PLAY_KEY_2026_10, INTEGRITY)]);
     let mut engine = Engine::new(layout.clone());
     assert!(stale_paths(&engine).is_empty());
-    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot).unwrap();
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
     assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (0, 0));
     assert!(keys.iter().all(|key| key.exists()));
     let _ = fs::remove_dir_all(&root);
@@ -933,4 +962,314 @@ fn keys_are_not_judged_by_a_patch_the_engine_cannot_resolve() {
         assert!(keys[0].exists());
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+/// A root with TEESimulator-RS installed, `keybox` as `keybox.xml`, the package list of
+/// `packages`, and one persisted key for each user, alias and chain of `keys`. Returns the paths
+/// of the keys, in order.
+fn root_with_keys(keybox: &str, packages: &[(&str, u32)], keys: &[(u32, &str, Vec<&[u8]>)]) -> (PathBuf, Layout, Vec<PathBuf>) {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    write_module(&layout.modules().join("tricky_store"), "TEESimulator-RS");
+    fs::write(layout.tricky_store().join("keybox.xml"), keybox).unwrap();
+    write_packages_list(&layout, packages);
+    let directory = layout.tricky_store().join("persistent_keys");
+    fs::create_dir_all(&directory).unwrap();
+    let mut paths = Vec::new();
+    for (index, (uid, alias, chain)) in keys.iter().enumerate() {
+        let path = directory.join(format!("{index}.bin"));
+        fs::write(&path, persisted_key_with_chain(*uid, alias.as_bytes(), chain)).unwrap();
+        paths.push(path);
+    }
+    (root, layout, paths)
+}
+
+const PLAY_STORE: (&str, u32) = ("com.android.vending", 10_140);
+const PLAY_SERVICES: (&str, u32) = ("com.google.android.gms", 10_150);
+const BANK: (&str, u32) = ("com.example.bank", 10_200);
+const OLD_SIGNER: &[u8] = b"an old attestation key";
+
+/// The keys of an old keybox under every category: the integrity key, a tap-and-pay key of
+/// Play services and a banking application's enrolment.
+fn keys_of_an_old_keybox() -> Vec<(u32, &'static str, Vec<&'static [u8]>)> {
+    vec![
+        (PLAY_STORE.1, INTEGRITY, vec![b"leaf", OLD_SIGNER, b"root"]),
+        (PLAY_SERVICES.1, "tapandpay", vec![b"leaf", OLD_SIGNER, b"root"]),
+        (BANK.1, "enrolment", vec![b"leaf", OLD_SIGNER, b"root"]),
+    ]
+}
+
+#[test]
+fn by_default_only_the_integrity_key_of_an_old_keybox_is_removed() {
+    // The keybox changed: tap-and-pay cards and a bank's enrolment must survive it, while the
+    // integrity key, which holds nothing of the user's, is made again for Play Integrity.
+    let (root, layout, keys) = root_with_keys(TEST_KEYBOX, &[PLAY_STORE, PLAY_SERVICES, BANK], &keys_of_an_old_keybox());
+    let mut engine = Engine::new(layout.clone());
+    let outdated = engine.outdated_keys(&KeyRemovalSettings::default(), None).unwrap();
+    let categories: Vec<KeyCategory> = outdated.iter().map(|key| key.category).collect();
+    assert_eq!(categories, [KeyCategory::Integrity, KeyCategory::Play, KeyCategory::Application]);
+    assert!(outdated.iter().all(|key| key.reasons == [OutdatedReason::OldKeybox { unusable: false }]));
+    assert_eq!(outdated.iter().map(|key| key.removed_by_repair).collect::<Vec<_>>(), [true, false, false]);
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
+    assert_eq!((report.stale_keys_removed, report.stale_keys_kept, report.outdated_keys_kept), (1, 0, 2));
+    assert!(!keys[0].exists() && keys[1].exists() && keys[2].exists());
+    // The kept keys are still reported as outdated, and a repair that is told to removes them.
+    assert_eq!(engine.outdated_keys(&KeyRemovalSettings::default(), None).unwrap().len(), 2);
+    let report = engine.apply(&removing_every_key(), ApplyMode::EarlyBoot, None).unwrap();
+    assert_eq!((report.stale_keys_removed, report.outdated_keys_kept), (2, 0));
+    assert!(keys.iter().all(|key| !key.exists()));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn never_keeps_even_the_integrity_key() {
+    let (root, layout, keys) = root_with_keys(TEST_KEYBOX, &[PLAY_STORE], &keys_of_an_old_keybox()[..1]);
+    let mut engine = Engine::new(layout.clone());
+    let removal = KeyRemovalSettings { integrity: KeyRemoval::Never, ..KeyRemovalSettings::default() };
+    let settings = Settings { key_removal: removal, ..Settings::default() };
+    let report = engine.apply(&settings, ApplyMode::EarlyBoot, None).unwrap();
+    assert_eq!((report.stale_keys_removed, report.outdated_keys_kept), (0, 1));
+    assert!(keys[0].exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// The test keybox with its RSA key only, and the certificates of its EC key: a keybox whose
+/// EC key was replaced, and the chain that key attested with.
+fn keybox_without_its_ec_key() -> (String, Vec<Vec<u8>>) {
+    let document = KeyboxDocument::read(TEST_KEYBOX).unwrap();
+    let ec = document.keys().find(|key| key.algorithm == KeyAlgorithm::ECDSA).unwrap();
+    let chain = ec.certificates.iter().map(|certificate| certificate.der.clone()).collect();
+    (document.retain_keys(|key| key.algorithm == KeyAlgorithm::RSA).render(), chain)
+}
+
+#[test]
+fn when_unusable_removes_a_key_only_once_its_old_chain_is_known_to_fail() {
+    // The old chain of the first key is readable and does not lead to a Google root, so its
+    // attestation fails already; the old chain of the second cannot be read, so nothing is
+    // known against it.
+    let (keybox, old_chain) = keybox_without_its_ec_key();
+    let chain: Vec<&[u8]> = std::iter::once(b"leaf".as_slice()).chain(old_chain.iter().map(Vec::as_slice)).collect();
+    let keys = [(PLAY_SERVICES.1, "broken", chain), (PLAY_SERVICES.1, "unknown", vec![b"leaf".as_slice(), OLD_SIGNER, b"root"])];
+    let (root, layout, paths) = root_with_keys(&keybox, &[PLAY_SERVICES], &keys);
+    let mut engine = Engine::new(layout.clone());
+    let removal = KeyRemovalSettings { play: KeyRemoval::WhenUnusable, ..KeyRemovalSettings::default() };
+    let outdated = engine.outdated_keys(&removal, None).unwrap();
+    assert_eq!(outdated[0].reasons, [OutdatedReason::OldKeybox { unusable: true }]);
+    assert_eq!(outdated[1].reasons, [OutdatedReason::OldKeybox { unusable: false }]);
+    assert_eq!(outdated.iter().map(|key| key.removed_by_repair).collect::<Vec<_>>(), [true, false]);
+    let report = engine.apply(&Settings { key_removal: removal, ..Settings::default() }, ApplyMode::EarlyBoot, None).unwrap();
+    assert_eq!((report.stale_keys_removed, report.outdated_keys_kept), (1, 1));
+    assert!(!paths[0].exists() && paths[1].exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_integrity_key_on_another_patch_is_kept_when_that_removal_is_off() {
+    let (root, layout, keys) = root_with_attested_keys(true, Some(&security_patch("2026-11-05")), &[(PLAY_STORE_KEY_2026_10_05, INTEGRITY)]);
+    let mut engine = Engine::new(layout.clone());
+    let removal = KeyRemovalSettings { integrity_patch: false, ..KeyRemovalSettings::default() };
+    let outdated = engine.outdated_keys(&removal, None).unwrap();
+    assert_eq!(outdated.len(), 1);
+    assert_eq!(outdated[0].reasons, [OutdatedReason::OldPatch]);
+    assert!(!outdated[0].removed_by_repair);
+    let report = engine.apply(&Settings { key_removal: removal, ..Settings::default() }, ApplyMode::EarlyBoot, None).unwrap();
+    assert_eq!((report.stale_keys_removed, report.outdated_keys_kept), (0, 1));
+    assert!(keys[0].exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_category_of_a_key_follows_its_packages_and_alias() {
+    let key = |uid: u32, alias: &[u8], leaf: &[u8]| PersistedKey::parse(Path::new("x.bin"), &attested_key(uid, alias, leaf, b"signer")).unwrap();
+    let list = android::PackageList::parse("com.google.android.gms 10150 0 /data\ncom.google.android.gsf 10150 0 /data\ncom.example.bank 10200 0 /data\n");
+    // From the attestation: the Play Store's key under the integrity alias.
+    let store = key(10_999, INTEGRITY.as_bytes(), PLAY_STORE_KEY_2026_10_05);
+    assert_eq!(KeyCategory::of(&store, &store.packages(&[])), KeyCategory::Integrity);
+    // Another application under the same alias is not the integrity key.
+    let app = key(10_999, INTEGRITY.as_bytes(), APP_KEY_2026_10_05);
+    assert_eq!(KeyCategory::of(&app, &app.packages(&[])), KeyCategory::Application);
+    // From the package list, for a key without an attestation, in another user too.
+    let services = key(1_010_150, b"tapandpay", b"leaf");
+    assert_eq!(services.packages(&list), ["com.google.android.gms", "com.google.android.gsf"]);
+    assert_eq!(KeyCategory::of(&services, &services.packages(&list)), KeyCategory::Play);
+    let integrity = key(10_150, INTEGRITY.as_bytes(), b"leaf");
+    assert_eq!(KeyCategory::of(&integrity, &integrity.packages(&list)), KeyCategory::Integrity);
+    // A key whose packages are not known is an application's: the most careful category.
+    let unknown = key(10_300, INTEGRITY.as_bytes(), b"leaf");
+    assert!(unknown.packages(&list).is_empty());
+    assert_eq!(KeyCategory::of(&unknown, &[]), KeyCategory::Application);
+}
+
+#[test]
+fn an_outdated_key_is_reported_as_the_application_reads_it() {
+    let (root, layout, _) = root_with_keys(TEST_KEYBOX, &[PLAY_STORE], &keys_of_an_old_keybox()[..1]);
+    let engine = Engine::new(layout.clone());
+    let outdated = engine.outdated_keys(&KeyRemovalSettings::default(), None).unwrap();
+    let json = serde_json::to_value(&outdated[0]).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "uid": 10140,
+            "alias": INTEGRITY,
+            "category": "integrity",
+            "packages": ["com.android.vending"],
+            "reasons": [{ "kind": "oldKeybox", "unusable": false }],
+            "removedByRepair": true,
+        })
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_kept_outdated_key_is_removed_when_the_user_asks() {
+    let mut keys = keys_of_an_old_keybox();
+    // A current key of the same application, signed by the installed keybox.
+    let signer = key_material(TEST_KEYBOX)[0].1[0].clone();
+    let signer: &'static [u8] = Box::leak(signer.into_boxed_slice());
+    keys.push((BANK.1, "current", vec![b"leaf", signer, b"root"]));
+    let (root, layout, paths) = root_with_keys(TEST_KEYBOX, &[PLAY_STORE, PLAY_SERVICES, BANK], &keys);
+    let mut engine = Engine::new(layout.clone());
+    assert_eq!(engine.remove_key(BANK.1, "enrolment", None).unwrap(), (1, 0));
+    assert!(!paths[2].exists());
+    // A current key, another user's key and a missing key are refused, and nothing is removed.
+    assert!(engine.remove_key(BANK.1, "current", None).is_err());
+    assert!(engine.remove_key(BANK.1, "tapandpay", None).is_err());
+    assert!(engine.remove_key(BANK.1, "enrolment", None).is_err());
+    assert!(paths[1].exists() && paths[3].exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_target_scope_decides_which_applications_are_targets() {
+    let installed = ["com.google.android.apps.walletnfcrel".to_string(), "com.example.app".to_string()];
+    let third_party = ["com.example.app".to_string()];
+    let packages = |scope: TargetScope| -> Vec<String> {
+        let settings = Settings { target_scope: scope, extra_packages: vec!["com.example.extra".to_string()], ..Settings::default() };
+        TargetList::build(&installed, &third_party, &settings).packages().map(str::to_string).collect()
+    };
+    let play = TargetList::ALWAYS.map(str::to_string).to_vec();
+    let with = |more: &[&str]| -> Vec<String> { play.iter().cloned().chain(more.iter().map(|package| package.to_string())).collect() };
+    assert_eq!(packages(TargetScope::Play), with(&["com.example.extra"]));
+    assert_eq!(packages(TargetScope::PlayAndWallets), with(&["com.google.android.apps.walletnfcrel", "com.example.extra"]));
+    assert_eq!(packages(TargetScope::AllApplications), with(&["com.example.app", "com.google.android.apps.walletnfcrel", "com.example.extra"]));
+    assert_eq!(Settings::default().target_scope, TargetScope::AllApplications);
+}
+
+#[test]
+fn settings_saved_before_the_safety_settings_existed_read_as_the_defaults() {
+    let settings =
+        Settings::parse(br#"{"extraPackages":[],"excludedPackages":[],"targetMode":"auto","playTargetMode":"generate","spoofOverrides":[]}"#).unwrap();
+    assert_eq!(settings, Settings::default());
+    assert_eq!(
+        settings.key_removal,
+        KeyRemovalSettings { integrity: KeyRemoval::WhenReplaced, play: KeyRemoval::Never, applications: KeyRemoval::Never, integrity_patch: true }
+    );
+    assert!(!settings.end_background_applications);
+}
+
+#[test]
+fn safety_settings_as_the_application_writes_them_are_read() {
+    let json = br#"{"targetScope":"playAndWallets","keyRemoval":{"integrity":"whenReplaced","play":"whenUnusable","applications":"never","integrityPatch":false},"endBackgroundApplications":true}"#;
+    let settings = Settings::parse(json).unwrap();
+    assert_eq!(settings.target_scope, TargetScope::PlayAndWallets);
+    assert_eq!(
+        settings.key_removal,
+        KeyRemovalSettings { integrity: KeyRemoval::WhenReplaced, play: KeyRemoval::WhenUnusable, applications: KeyRemoval::Never, integrity_patch: false }
+    );
+    assert!(settings.end_background_applications);
+    assert!(Settings::parse(br#"{"keyRemoval":{"play":"always"}}"#).is_err());
+}
+
+#[test]
+fn apply_keeps_the_status_list_it_was_given_for_the_boot_hook() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let mut engine = Engine::new(layout.clone());
+    assert_eq!(engine.store.status_list(), None);
+    let list = r#"{"entries":{"1a":{"status":"REVOKED","reason":"KEY_COMPROMISE"}}}"#;
+    engine.apply(&Settings::default(), ApplyMode::NoRestart, Some(list)).unwrap();
+    assert_eq!(engine.store.status_list().as_deref(), Some(list));
+    // An invalid list is not saved over a valid one.
+    engine.apply(&Settings::default(), ApplyMode::NoRestart, Some("not a status list")).unwrap();
+    assert_eq!(engine.store.status_list().as_deref(), Some(list));
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A verdict of keys of `algorithms`, each usable or with a problem.
+fn verdict(keys: &[(KeyAlgorithm, bool)]) -> KeyboxVerdict {
+    let keys = keys
+        .iter()
+        .map(|(algorithm, usable)| KeyVerdict {
+            algorithm: algorithm.name().to_string(),
+            serial: "1".to_string(),
+            root: None,
+            expires: None,
+            problems: if *usable { Vec::new() } else { vec![KeyProblem::KeyMismatch] },
+        })
+        .collect();
+    KeyboxVerdict { keys, revocation_checked: true, defect: None }
+}
+
+#[test]
+fn a_keybox_policy_keeps_the_installed_keybox_as_it_says() {
+    let usable = verdict(&[(KeyAlgorithm::ECDSA, true)]);
+    let unusable = verdict(&[(KeyAlgorithm::ECDSA, false)]);
+    let needed = KeyboxPolicy::WhenNeeded { margin_seconds: 48 * 3600 };
+    // A keybox the user chose is always installed.
+    assert_eq!(KeyboxPolicy::Replace.declines(&unusable, Some(&usable), Some(&usable)), None);
+    // Without downgrading, a mirror's keybox of the same rank replaces a working one.
+    assert_eq!(KeyboxPolicy::NoDowngrade.declines(&usable, Some(&usable), None), None);
+    assert_eq!(KeyboxPolicy::NoDowngrade.declines(&unusable, Some(&usable), None), Some(Declined::Worse));
+    assert_eq!(KeyboxPolicy::NoDowngrade.declines(&unusable, None, None), None);
+    // When needed: a keybox still usable at the end of the margin is kept, however good the offer.
+    assert_eq!(needed.declines(&usable, Some(&usable), Some(&usable)), Some(Declined::NotNeeded));
+    // One that expires within the margin, or is unusable now, is replaced, but not by a worse one.
+    assert_eq!(needed.declines(&usable, Some(&usable), Some(&unusable)), None);
+    assert_eq!(needed.declines(&unusable, Some(&usable), Some(&unusable)), Some(Declined::Worse));
+    assert_eq!(needed.declines(&usable, Some(&unusable), Some(&unusable)), None);
+    // Without an installed keybox, any installable one is installed.
+    assert_eq!(needed.declines(&unusable, None, None), None);
+}
+
+#[test]
+fn a_keybox_that_is_needed_is_installed_when_needed() {
+    // The installed keybox has no usable key (its root is not Google's), so a replacement is
+    // needed, and one of the same rank is installed.
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let mut engine = Engine::new(layout.clone());
+    engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::Replace).unwrap();
+    let (other, _) = keybox_without_its_ec_key();
+    let report = engine.install_keybox(other.as_bytes(), None, None, KeyboxPolicy::WhenNeeded { margin_seconds: 48 * 3600 }).unwrap();
+    assert_eq!(report.declined, None);
+    assert!(report.changed);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_device_key_of_an_application_that_is_not_a_target_is_left_alone() {
+    // The Play Store is not in target.txt: TEESimulator-RS would pass the deletion to keystore2,
+    // which would delete the application's own key. A client that would keep the key if it
+    // were asked shows that it is not asked: the inert file alone is removed.
+    let (root, layout, key) = root_with_a_stale_key(INTEGRITY.as_bytes());
+    fs::write(layout.tricky_store().join("target.txt"), "com.example.other\n").unwrap();
+    keystore_client(&layout, 4);
+    let mut engine = Engine::new(layout.clone());
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
+    assert_eq!((report.stale_keys_removed, report.stale_keys_kept), (1, 0));
+    assert!(!key.exists());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_invalid_status_list_falls_back_to_the_saved_one() {
+    // A run given a list that cannot be read keeps the copy saved last, and judges with it.
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let mut engine = Engine::new(layout.clone());
+    let list = r#"{"entries":{"1a":{"status":"REVOKED"}}}"#;
+    engine.apply(&Settings::default(), ApplyMode::NoRestart, Some(list)).unwrap();
+    engine.apply(&Settings::default(), ApplyMode::NoRestart, Some("{")).unwrap();
+    assert_eq!(engine.store.status_list().as_deref(), Some(list));
+    let _ = fs::remove_dir_all(&root);
 }

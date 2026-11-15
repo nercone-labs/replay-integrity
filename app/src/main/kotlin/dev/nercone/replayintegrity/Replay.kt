@@ -10,10 +10,14 @@ import dev.nercone.replayintegrity.engine.Engine
 import dev.nercone.replayintegrity.engine.EngineException
 import dev.nercone.replayintegrity.engine.EngineResult
 import dev.nercone.replayintegrity.engine.FingerprintReport
+import dev.nercone.replayintegrity.engine.Declined
 import dev.nercone.replayintegrity.engine.InstallReport
+import dev.nercone.replayintegrity.engine.KeyRemovalReport
+import dev.nercone.replayintegrity.engine.KeyboxPolicy
 import dev.nercone.replayintegrity.engine.KeyboxVerdict
 import dev.nercone.replayintegrity.engine.LogLine
 import dev.nercone.replayintegrity.engine.Module
+import dev.nercone.replayintegrity.engine.OutdatedKey
 import dev.nercone.replayintegrity.engine.StatusReport
 import dev.nercone.replayintegrity.net.Downloader
 import dev.nercone.replayintegrity.privilege.Privilege
@@ -100,6 +104,17 @@ class Replay(val context: Context) {
         }
     }
 
+    /**
+     * The copy of the certificate status list that `statusList` downloaded, without downloading:
+     * for the operations documented to download nothing (a repair, removing a key). `null` when
+     * there is none up to `STATUS_LIST_STALE_MILLIS` old; the engine then uses the copy it kept.
+     */
+    suspend fun cachedStatusList(): File? = statusListLock.withLock {
+        withContext(Dispatchers.IO) {
+            File(engine.directory, STATUS_LIST).takeIf { it.isFile && System.currentTimeMillis() - it.lastModified() in 0 until STATUS_LIST_STALE_MILLIS }
+        }
+    }
+
     suspend fun status(): EngineResult<StatusReport> = engine.status(privilege(), statusList())
 
     /**
@@ -107,8 +122,7 @@ class Replay(val context: Context) {
      * what was fetched, then applies the configuration and installs or removes the boot hook. A
      * download or installation failure is a problem, not an error: the installed files stay
      * and the apply still runs, so a bad network or a bad mirror never leaves the device worse
-     * off. The keybox is taken from the first source that offers one at least as good as the
-     * installed one (`refreshKeybox`).
+     * off. The keybox is installed as `keyboxReplacement` says (`refreshKeybox`).
      */
     suspend fun refresh(): Refreshed = operations.withLock {
         val privilege = privilege()
@@ -116,7 +130,7 @@ class Replay(val context: Context) {
         val problems = mutableListOf<String>()
         val log = mutableListOf<LogLine>()
         val status = statusList()
-        val keybox = if (values.autoKeybox) refreshKeybox(privilege, values.keyboxSources(), status, problems, log) else null
+        val keybox = if (values.autoKeybox) refreshKeybox(privilege, values.keyboxSources(), values.keyboxPolicy(), status, problems, log) else null
         val fingerprint = if (values.autoFingerprint) {
             attempt("fingerprint", problems) {
                 val fetched = downloader.fingerprint(values.fingerprintUrl)
@@ -130,7 +144,7 @@ class Replay(val context: Context) {
         // the first apply. A scheduled run on an unchanged device then re-applies quietly.
         val changed = keybox?.changed == true || fingerprint?.changed == true
         val restart = values.restartOnChange && (changed || !values.applied)
-        val apply = engine.apply(privilege, values.engine(), restart).also { log += it.log }.value
+        val apply = engine.apply(privilege, values.engine(), restart, status).also { log += it.log }.value
         settings.update { it.copy(applied = true) }
         val hook = attempt("boot hook", problems) { synchronizeHook(privilege).also { log += it.log }.value }
         settings.update { it.copy(lastRefreshAt = System.currentTimeMillis(), lastRefreshProblems = problems) }
@@ -138,23 +152,32 @@ class Replay(val context: Context) {
     }
 
     /**
-     * Offers the keybox of each source, in order, until the engine installs one or finds it is
-     * the installed one. The engine declines a keybox that ranks below the installed one
-     * (`--no-downgrade`), so a mirror that serves a revoked or broken keybox never replaces a
-     * working one, and the next source is tried. A declined keybox is not a problem: the
-     * installed one is better, which is the device as it should be (the checklist shows the
-     * installed keybox either way). A source that cannot be downloaded or checked is a problem
-     * only when no source was installed or declined, because then nothing was learned at all.
-     * Returns the report of the source that was installed, or of the last one declined.
+     * Offers the keybox of each source, in order, with `policy`, until the engine installs one,
+     * finds it is the installed one, or keeps the installed one because it is not to be replaced
+     * yet (`Declined.NOT_NEEDED`: no other source needs to be asked). The engine declines a
+     * keybox that ranks below the installed one, so a mirror that serves a revoked or broken
+     * keybox never replaces a working one, and the next source is tried. A declined keybox is
+     * not a problem: the installed one is better, which is the device as it should be (the
+     * checklist shows the installed keybox either way). A source that cannot be downloaded or
+     * checked is a problem only when no source was installed or declined, because then nothing
+     * was learned at all. Returns the report of the source that was installed, or of the last
+     * one declined.
      */
-    suspend fun refreshKeybox(privilege: Privilege, sources: List<String>, status: File?, problems: MutableList<String>, log: MutableList<LogLine>): InstallReport? {
+    suspend fun refreshKeybox(
+        privilege: Privilege,
+        sources: List<String>,
+        policy: KeyboxPolicy,
+        status: File?,
+        problems: MutableList<String>,
+        log: MutableList<LogLine>,
+    ): InstallReport? {
         val failures = mutableListOf<String>()
         var declined: InstallReport? = null
         for (url in sources) {
             val report = attempt(url, failures) {
                 val fetched = downloader.keybox(url)
                 val result = try {
-                    engine.installKeybox(privilege, engine.write(KEYBOX, fetched.bytes), fetched.source, status, noDowngrade = true)
+                    engine.installKeybox(privilege, engine.write(KEYBOX, fetched.bytes), fetched.source, status, policy)
                 } catch (error: EngineException) {
                     log += error.log
                     throw error
@@ -162,7 +185,7 @@ class Replay(val context: Context) {
                 log += result.log
                 result.value
             } ?: continue
-            if (report.declined == null) return report
+            if (report.declined == null || report.declined == Declined.NOT_NEEDED) return report
             declined = report
         }
         if (declined == null) problems += failures.map { "keybox: $it" }
@@ -171,24 +194,38 @@ class Replay(val context: Context) {
 
     /**
      * Re-applies the configuration without downloading anything: rebuild the target list,
-     * re-apply the spoof flags and the security patch, and remove the stale persisted keys that
-     * keep an application on an old keybox, or the Play Integrity key on an old security patch. With `restart`, the keystore daemon and the Play
-     * processes are restarted; otherwise only when stale keys were removed, which the running
-     * daemon may still hold, and the settings allow restarts.
+     * re-apply the spoof flags and the security patch, and remove the outdated persisted keys
+     * that the settings allow (`keyRemoval`): keys that keep an application on an old keybox, or
+     * the Play Integrity key on an old security patch. With `restart`, the keystore daemon and
+     * the Play processes are restarted; otherwise only when stale keys were removed, which the
+     * running daemon may still hold, and the settings allow restarts.
      */
     suspend fun repair(restart: Boolean): Repaired = operations.withLock {
         val privilege = privilege()
         val values = settings.values.value
-        val applied = engine.apply(privilege, values.engine(), restart)
+        val applied = engine.apply(privilege, values.engine(), restart, cachedStatusList())
         settings.update { it.copy(applied = true) }
         val late = !restart && values.restartOnChange && applied.value.staleKeysRemoved > 0
-        val restarted = if (late) engine.restart(privilege) else null
+        val restarted = if (late) engine.restart(privilege, values.engine()) else null
         Repaired(applied.value, applied.value.daemonRestarted || restarted?.value?.restarted == true, applied.log + restarted?.log.orEmpty())
     }
 
     suspend fun restart(): EngineResult<Boolean> = operations.withLock {
-        val result = engine.restart(privilege())
+        val result = engine.restart(privilege(), settings.values.value.engine())
         EngineResult(result.value.restarted, result.log)
+    }
+
+    /**
+     * Removes an outdated key that the settings keep, because the user chose to lose what was
+     * enrolled with it. The keystore daemon is restarted afterwards when the settings allow
+     * restarts, as after a repair that removed keys.
+     */
+    suspend fun removeKey(key: OutdatedKey): EngineResult<KeyRemovalReport> = operations.withLock {
+        val privilege = privilege()
+        val values = settings.values.value
+        val removed = engine.removeKey(privilege, key.uid, key.alias, cachedStatusList())
+        val restarted = if (values.restartOnChange && removed.value.removed > 0) engine.restart(privilege, values.engine()) else null
+        EngineResult(removed.value, removed.log + restarted?.log.orEmpty())
     }
 
     /** Installs or removes the boot hook, with or without the package watcher, as the settings say. */
@@ -247,7 +284,7 @@ class Replay(val context: Context) {
         val source = "file:${candidate.name}"
         val values = settings.values.value
         val installed = when (candidate) {
-            is Candidate.Keybox -> engine.installKeybox(privilege, candidate.file, source, statusList(), noDowngrade = false)
+            is Candidate.Keybox -> engine.installKeybox(privilege, candidate.file, source, statusList(), KeyboxPolicy.Replace)
             is Candidate.Fingerprint -> engine.installFingerprint(privilege, candidate.file, source, values.engine())
         }
         settings.update {
@@ -256,7 +293,7 @@ class Replay(val context: Context) {
                 is Candidate.Fingerprint -> it.copy(autoFingerprint = false, applied = true)
             }
         }
-        val applied = engine.apply(privilege, values.engine(), values.restartOnChange && installed.value.changed)
+        val applied = engine.apply(privilege, values.engine(), values.restartOnChange && installed.value.changed, statusList())
         Repaired(applied.value, applied.value.daemonRestarted, installed.log + applied.log)
     }
 

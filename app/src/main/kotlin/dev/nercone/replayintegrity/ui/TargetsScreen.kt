@@ -31,6 +31,7 @@ import dev.nercone.replayintegrity.R
 import dev.nercone.replayintegrity.config.Settings
 import dev.nercone.replayintegrity.engine.Target
 import dev.nercone.replayintegrity.engine.TargetMode
+import dev.nercone.replayintegrity.engine.TargetScope
 
 /** The applications whose keys TEESimulator-RS attests, and the choices that shape the list. */
 object TargetsScreen {
@@ -55,6 +56,10 @@ object TargetsScreen {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     HomeScreen.Pending(state, settings, model)
+                    Widgets.Header(stringResource(R.string.targets_scope))
+                    Widgets.Segments(TargetScope.entries, settings.targetScope, { Labels.targetScope(it) }, model::setTargetScope)
+                    Text(stringResource(R.string.targets_scope_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
+
                     Widgets.Header(stringResource(R.string.targets_mode))
                     Widgets.Segments(TargetMode.entries, settings.targetMode, { Labels.targetMode(it) }, model::setTargetMode)
                     Text(stringResource(R.string.targets_mode_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))

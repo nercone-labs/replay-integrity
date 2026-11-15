@@ -69,6 +69,77 @@ enum class TargetMode {
     @SerialName("patch") PATCH,
 }
 
+/** Which installed applications are targets besides the Play stack (`TargetScope` of the engine). */
+@Serializable
+enum class TargetScope {
+    @SerialName("play") PLAY,
+    @SerialName("playAndWallets") PLAY_AND_WALLETS,
+    @SerialName("allApplications") ALL_APPLICATIONS,
+}
+
+/** When an outdated key of an old keybox is removed by a repair (`KeyRemoval` of the engine). */
+@Serializable
+enum class KeyRemoval {
+    @SerialName("never") NEVER,
+    @SerialName("whenUnusable") WHEN_UNUSABLE,
+    @SerialName("whenReplaced") WHEN_REPLACED,
+}
+
+/** Which outdated keys a repair removes, by kind of key (`KeyRemovalSettings` of the engine). */
+@Serializable
+data class KeyRemovalSettings(
+    /** The key of the Play Integrity API, which holds nothing of the user's. */
+    val integrity: KeyRemoval = KeyRemoval.WHEN_REPLACED,
+    /** The other keys of the Play stack: tap-and-pay cards, passkeys. */
+    val play: KeyRemoval = KeyRemoval.NEVER,
+    /** The keys of every other application: a bank's or a wallet's enrolment. */
+    val applications: KeyRemoval = KeyRemoval.NEVER,
+    /** Whether the integrity key is removed when it attests another security patch. */
+    val integrityPatch: Boolean = true,
+)
+
+/** What a persisted key is for (`KeyCategory` of the engine). */
+@Serializable
+enum class KeyCategory {
+    @SerialName("integrity") INTEGRITY,
+    @SerialName("play") PLAY,
+    @SerialName("application") APPLICATION,
+}
+
+/**
+ * Why a persisted key is outdated: `kind` is `oldKeybox` (with `unusable` when the old chain is
+ * known to fail) or `oldPatch`.
+ */
+@Serializable
+data class OutdatedReason(val kind: String, val unusable: Boolean = false) {
+    companion object {
+        const val OLD_KEYBOX = "oldKeybox"
+        const val OLD_PATCH = "oldPatch"
+    }
+}
+
+/** A persisted key attested with what is no longer configured (`OutdatedKey` of the engine). */
+@Serializable
+data class OutdatedKey(
+    val uid: Long,
+    val alias: String,
+    val category: KeyCategory = KeyCategory.APPLICATION,
+    val packages: List<String> = emptyList(),
+    val reasons: List<OutdatedReason> = emptyList(),
+    /** Whether the next repair removes it; a kept key can be removed by the user. */
+    val removedByRepair: Boolean = false,
+)
+
+/** Why the engine kept the installed keybox instead of the offered one (`Declined` of the engine). */
+@Serializable
+enum class Declined {
+    /** The installed keybox ranks higher. */
+    @SerialName("worse") WORSE,
+
+    /** The installed keybox stays usable beyond the expiry margin. */
+    @SerialName("notNeeded") NOT_NEEDED,
+}
+
 @Serializable
 data class Module(
     val id: String,
@@ -207,9 +278,6 @@ data class Target(@SerialName("package") val packageName: String, val mode: Targ
 data class TargetList(val targets: List<Target> = emptyList())
 
 @Serializable
-data class PersistedKey(val uid: Long, val alias: String)
-
-@Serializable
 data class DaemonState(val daemons: List<Long> = emptyList(), val supervisors: List<Long> = emptyList()) {
     val running: Boolean get() = daemons.isNotEmpty()
 }
@@ -236,10 +304,13 @@ data class BootHook(
 data class EngineSettings(
     val extraPackages: List<String> = emptyList(),
     val excludedPackages: List<String> = emptyList(),
+    val targetScope: TargetScope = TargetScope.ALL_APPLICATIONS,
     val targetMode: TargetMode = TargetMode.AUTO,
     /** The mode of the Play stack, which the engine defaults to generating its keys. */
     val playTargetMode: TargetMode = TargetMode.GENERATE,
     val spoofOverrides: List<List<JsonElement>> = emptyList(),
+    val keyRemoval: KeyRemovalSettings = KeyRemovalSettings(),
+    val endBackgroundApplications: Boolean = false,
 ) {
     /** The overrides by key; a malformed entry is left out. */
     fun overrides(): Map<String, Boolean> = spoofOverrides.mapNotNull { pair ->
@@ -252,9 +323,12 @@ data class EngineSettings(
     fun sameAs(other: EngineSettings): Boolean =
         extraPackages.toSet() == other.extraPackages.toSet() &&
             excludedPackages.toSet() == other.excludedPackages.toSet() &&
+            targetScope == other.targetScope &&
             targetMode == other.targetMode &&
             playTargetMode == other.playTargetMode &&
-            overrides() == other.overrides()
+            overrides() == other.overrides() &&
+            keyRemoval == other.keyRemoval &&
+            endBackgroundApplications == other.endBackgroundApplications
 
     companion object {
         fun override(key: String, value: Boolean): List<JsonElement> = listOf(JsonPrimitive(key), JsonPrimitive(value))
@@ -278,7 +352,8 @@ data class StatusReport(
     val securityPatch: String? = null,
     val targets: TargetList? = null,
     val persistedKeys: Int = 0,
-    val staleKeys: List<PersistedKey> = emptyList(),
+    /** The outdated persisted keys, judged by the saved settings. */
+    val outdatedKeys: List<OutdatedKey> = emptyList(),
     val daemon: DaemonState = DaemonState(),
     val bootHook: BootHook = BootHook(),
     val appliedAt: Long? = null,
@@ -289,6 +364,12 @@ data class StatusReport(
     val strongReady: Boolean = false,
 ) {
     fun component(component: Component): ComponentState? = components.find { it.component == component }
+
+    /** The outdated keys the next repair removes. */
+    val staleKeys: List<OutdatedKey> get() = outdatedKeys.filter { it.removedByRepair }
+
+    /** The outdated keys the saved settings keep, which the user can remove. */
+    val keptKeys: List<OutdatedKey> get() = outdatedKeys.filter { !it.removedByRepair }
 
     /** The spoof flags `apply` writes, by key. */
     fun appliedSpoof(): Map<String, Boolean> = spoof.mapNotNull { pair ->
@@ -319,6 +400,8 @@ data class ApplyReport(
     val staleKeysRemoved: Int = 0,
     /** Stale keys kept because the keystore could not delete them yet; the next repair tries again. */
     val staleKeysKept: Int = 0,
+    /** Outdated keys that the settings keep. */
+    val outdatedKeysKept: Int = 0,
     /** Whether the installed keybox was not well-formed and was written again. */
     val keyboxRepaired: Boolean = false,
     val daemonRestarted: Boolean = false,
@@ -331,13 +414,17 @@ data class InstallReport(
     val verdict: KeyboxVerdict? = null,
     /** The keys of the offered keybox that were not written, because others are usable. */
     val droppedKeys: Int = 0,
-    /** Why the offered file was not installed, when the installed keybox ranked higher. */
-    val declined: String? = null,
+    /** Why the offered file was not installed, when the policy kept the installed keybox. */
+    val declined: Declined? = null,
     val fingerprint: FingerprintReport? = null,
 )
 
 @Serializable
 data class RestartReport(val restarted: Boolean = false)
+
+/** What `remove-key` did: the keys removed, and those kept because the keystore could not delete them. */
+@Serializable
+data class KeyRemovalReport(val removed: Int = 0, val kept: Int = 0)
 
 @Serializable
 data class ModuleOutput(val output: String = "")

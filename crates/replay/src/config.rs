@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Component, Layout, PatchDate, ReplayError, SpoofFlag, SpoofFlags, Target, TargetMode};
+use crate::{Component, KeyCategory, Layout, PatchDate, ReplayError, SpoofFlag, SpoofFlags, Target, TargetMode};
 
 /// The files of TEESimulator-RS and PlayIntegrityFork that the engine writes, under
 /// `/data/adb/tricky_store` and in the module directories.
@@ -70,9 +70,80 @@ impl KeystoreConfig {
     }
 }
 
-/// The settings of the engine: what the user chose for the attestation targets and the spoof
-/// flags. The application passes them with `--settings`, and `apply` saves a copy in the store,
-/// so that the boot hook, which runs without the application, applies the same choices.
+/// Which installed applications are attestation targets besides the Play stack, which always
+/// is one (`TargetList::build`). Packages the user adds are targets whatever the scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TargetScope {
+    /// The Play stack only: Play Integrity is all that is attested.
+    Play,
+    /// The Play stack and the installed wallet applications (`TargetList::WALLET`).
+    PlayAndWallets,
+    /// The Play stack, the installed wallet applications and every third-party application,
+    /// so that applications that check key attestation themselves pass as well.
+    AllApplications,
+}
+
+/// When a persisted key whose chain was signed by a key that is no longer in the keybox is
+/// removed, so that its application makes it again with the current keybox
+/// (`OutdatedKey::is_removed_by`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeyRemoval {
+    /// Never: the key is reported, and only the user removes it (`Engine::remove_key`).
+    Never,
+    /// When the chain the key was attested with is known to be no longer valid: revoked,
+    /// expired or untrusted. Until then the key keeps passing attestation, and what the user
+    /// enrolled with it is kept.
+    WhenUnusable,
+    /// As soon as the keybox that attested it is replaced, before that keybox can be revoked.
+    WhenReplaced,
+}
+
+/// Which outdated persisted keys a repair removes, for each kind of key (`KeyCategory`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct KeyRemovalSettings {
+    /// The key of the Play Integrity API (`KeyCategory::Integrity`). It holds nothing of the
+    /// user's, and a key on an old keybox fails Play Integrity, so it is removed as soon as its
+    /// keybox is replaced by default.
+    pub integrity: KeyRemoval,
+    /// The other keys of the Play stack (`KeyCategory::Play`): tap-and-pay cards, passkeys and
+    /// the like, which are lost with the key. Kept by default.
+    pub play: KeyRemoval,
+    /// The keys of every other application (`KeyCategory::Application`): a banking or wallet
+    /// application's enrolment, which is lost with the key. Kept by default.
+    pub applications: KeyRemoval,
+    /// Whether the key of the Play Integrity API is removed when it attests a security patch
+    /// other than the configured one (`OutdatedReason::OldPatch`).
+    pub integrity_patch: bool,
+}
+
+impl Default for KeyRemovalSettings {
+    fn default() -> KeyRemovalSettings {
+        KeyRemovalSettings { integrity: KeyRemoval::WhenReplaced, play: KeyRemoval::Never, applications: KeyRemoval::Never, integrity_patch: true }
+    }
+}
+
+impl KeyRemovalSettings {
+    /// The removal of the keys of `category`.
+    pub fn of(&self, category: KeyCategory) -> KeyRemoval {
+        match category {
+            KeyCategory::Integrity => self.integrity,
+            KeyCategory::Play => self.play,
+            KeyCategory::Application => self.applications,
+        }
+    }
+}
+
+/// The settings of the engine: what the user chose for the attestation targets, the spoof
+/// flags, the removal of outdated keys and the restarts. The application passes them with
+/// `--settings`, and `apply` saves a copy in the store, so that the boot hook, which runs
+/// without the application, applies the same choices.
+///
+/// The defaults are the safe choices that still reach STRONG: they never remove a key that may
+/// hold what the user enrolled, and never end applications that Play Integrity does not need
+/// ended. Each one can be changed towards integrity or towards safety.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -81,6 +152,8 @@ pub struct Settings {
     /// Installed packages left out of the attestation targets. The Play stack
     /// (`TargetList::ALWAYS`) cannot be left out.
     pub excluded_packages: Vec<String>,
+    /// Which installed applications are targets besides the Play stack.
+    pub target_scope: TargetScope,
     /// How TEESimulator-RS handles the keys of every target but the Play stack.
     pub target_mode: TargetMode,
     /// How TEESimulator-RS handles the keys of the Play stack (`TargetList::ALWAYS`).
@@ -89,6 +162,11 @@ pub struct Settings {
     pub play_target_mode: TargetMode,
     /// Overrides of the spoof flags, by their key.
     pub spoof_overrides: Vec<(String, bool)>,
+    /// Which outdated persisted keys a repair removes.
+    pub key_removal: KeyRemovalSettings,
+    /// Whether a restart also ends every background application (`ActivityManager::kill_background`),
+    /// besides the Play processes that Play Integrity needs restarted (`REFRESH_PROCESSES`).
+    pub end_background_applications: bool,
 }
 
 impl Default for Settings {
@@ -96,9 +174,12 @@ impl Default for Settings {
         Settings {
             extra_packages: Vec::new(),
             excluded_packages: Vec::new(),
+            target_scope: TargetScope::AllApplications,
             target_mode: TargetMode::Auto,
             play_target_mode: TargetMode::Generate,
             spoof_overrides: Vec::new(),
+            key_removal: KeyRemovalSettings::default(),
+            end_background_applications: false,
         }
     }
 }
