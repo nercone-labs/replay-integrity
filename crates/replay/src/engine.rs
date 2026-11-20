@@ -192,8 +192,11 @@ impl Engine {
     /// rest allows for an application that makes its key again in the meantime.
     pub const STALE_KEY_DELETIONS: usize = 4;
 
-    /// The properties that hold the API level the device launched with, in order of preference.
-    pub const FIRST_API_LEVEL_PROPERTIES: [&'static str; 3] = ["ro.product.first_api_level", "ro.board.first_api_level", "ro.board.api_level"];
+    /// The property that holds the API level the device launched with, set by the device maker
+    /// and never updated (`Build.VERSION.DEVICE_INITIAL_SDK_INT` reads it). The `ro.board.*`
+    /// levels are not read in its place: they are the vendor API level of the chipset, which on
+    /// a device with a frozen vendor image can be older than the device itself.
+    pub const FIRST_API_LEVEL_PROPERTY: &'static str = "ro.product.first_api_level";
 
     pub fn new(layout: Layout) -> Engine {
         let store = Store::new(&layout);
@@ -412,14 +415,44 @@ impl Engine {
     /// `target.txt` as it is, rather than replacing it with a list that lacks the installed
     /// applications.
     pub fn build_targets(&mut self, settings: &Settings) -> Result<TargetList, ReplayError> {
-        let installed = PackageManager::installed()?;
-        let third_party = PackageManager::third_party()?;
+        let (installed, third_party) = self.installed_packages()?;
         let list = TargetList::build(&installed, &third_party, settings);
         Files::create_directory(&self.layout.tricky_store(), BootHook::DIRECTORY_MODE)?;
         if Files::write_if_changed(&self.config.target(), list.render().as_bytes(), KeystoreConfig::CONFIG_MODE)? {
             self.log.info(format!("target.txt now lists {} package(s)", list.targets.len()));
         }
         Ok(list)
+    }
+
+    /// The installed packages and the third-party ones among them, of every user. Those of the
+    /// system user must be listed (`PackageManager::installed`); each other user's are added when
+    /// they can be listed, and a user that cannot be listed is skipped with a warning, so that
+    /// another user or profile never makes the list shorter than that of the system user.
+    fn installed_packages(&mut self) -> Result<(Vec<String>, Vec<String>), ReplayError> {
+        let mut installed = PackageManager::installed()?;
+        let mut third_party = PackageManager::third_party()?;
+        let users = match PackageManager::users() {
+            Ok(users) => users,
+            Err(error) => {
+                self.log.warning(format!("the users cannot be listed; only the packages of the system user are targets: {error}"));
+                Vec::new()
+            }
+        };
+        for user in users.into_iter().filter(|user| *user != 0) {
+            match (PackageManager::installed_for(user), PackageManager::third_party_for(user)) {
+                (Ok(packages), Ok(third)) => {
+                    for (list, added) in [(&mut installed, packages), (&mut third_party, third)] {
+                        for package in added {
+                            if !list.contains(&package) {
+                                list.push(package);
+                            }
+                        }
+                    }
+                }
+                (Err(error), _) | (_, Err(error)) => self.log.warning(format!("the packages of user {user} cannot be listed and are left out: {error}")),
+            }
+        }
+        Ok((installed, third_party))
     }
 
     /// The packages of `target.txt`, if it exists.
@@ -432,10 +465,10 @@ impl Engine {
         android::SystemProperty::sdk()
     }
 
-    /// The API level the device launched with, from the first property of
-    /// `FIRST_API_LEVEL_PROPERTIES` that holds a number.
+    /// The API level the device launched with (`FIRST_API_LEVEL_PROPERTY`), or `None` when the
+    /// device does not say: guessing it from another level would report a wrong one.
     pub fn first_api_level() -> Option<u32> {
-        Engine::FIRST_API_LEVEL_PROPERTIES.iter().find_map(|name| android::SystemProperty::get(name)?.trim().parse().ok())
+        android::SystemProperty::get(Engine::FIRST_API_LEVEL_PROPERTY)?.trim().parse().ok().filter(|level| *level > 0)
     }
 
     /// The installed keybox, if any, read and checked.

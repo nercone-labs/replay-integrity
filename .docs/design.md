@@ -608,13 +608,69 @@ or on the first apply, and only when the user allows restarts at all. The repair
 not restart the Play processes the system has just started; it restarts the keystore daemon only
 when it removed stale keys that the running daemon may still hold.
 
+## Other users and profiles
+
+`target.txt` names packages, not users. Earlier versions built it from `cmd package list
+packages`, which without `--user` lists the packages of the system user only. An application
+installed only in another user or profile was then never a target: a work profile, Samsung's
+Secure Folder, Xiaomi's Second Space, or a secondary user. The engine now lists the packages
+(and the third-party ones) of every user that `cmd package list users` names and adds them to
+those of the system user (`Engine::installed_packages`). The list of the system user must still
+succeed and hold the `android` package, as before; a user whose packages cannot be listed is
+skipped with a warning, so another user can only add targets, never shorten the list. An
+application installed in several users appears once. `--user all` was not used, because what it
+does differs between releases of the package manager; asking for each user is defined on every
+release.
+
+## Background work of the application
+
+- **A stopped worker is not a failure.** WorkManager stops a running worker when its quota or
+  runtime runs out, a constraint is lost, or a device maker's battery manager (MIUI/HyperOS,
+  ColorOS, One UI) stops jobs, and it does so by cancelling the coroutine. The workers used to
+  catch that cancellation as an error: the repair after boot notified a failure that was none,
+  and the refresh counted it as a problem. They now let it through, so WorkManager runs the work
+  again.
+- **The repair after boot is enqueued with `KEEP`.** `BOOT_COMPLETED` normally comes once per
+  boot, but a broadcast sent again (by a device maker's ROM or by hand) made `REPLACE` stop a
+  repair in the middle of an engine command. `KEEP` is the safe choice in any case.
+- **The hook is installed again after an update** (`MY_PACKAGE_REPLACED`, `HookWorker`). The boot
+  hook and the package watcher run the copy of the engine in the store, which only installing the
+  hook replaces; before, the previous engine kept running until the next refresh, or for ever with
+  the refresh turned off. Nothing else is done then. A failure (Shizuku not started yet after the
+  update) is retried three times with a backoff and not notified, because nothing is worse than
+  before the update. An application that a cleaner force-stopped may not receive the broadcast;
+  the next refresh then installs the hook. `QUICKBOOT_POWERON` of some device makers was not added: it
+  is a resume from a deep sleep, not a boot, so the boot hook did not run and nothing needs repair.
+- **Settings are written without blocking the screen.** `Settings.update` wrote with `commit` on
+  the main thread, which stalls the screen on slow storage. On the main thread it now uses
+  `apply`; off it (the workers), it still writes before returning, so that a process the system
+  ends right after the work keeps what it did.
+- **A Shizuku connection that times out or fails is released** (`unbindUserService`), instead of
+  staying registered and adding one more connection at every attempt. The release is posted to
+  the main thread, where Shizuku walks its connections, because releasing from a worker's thread
+  while Shizuku delivers a connection could modify its set during that walk. A connection is not
+  bound at all when the caller was cancelled before it started.
+- **File pickers.** A ROM without a documents application has no activity for `OpenDocument`; the
+  application now says so instead of ending.
+
 ## Information the app does not take from the engine
 
 The device's own model, Android version, security patch and build fingerprint come from
 `android.os.Build` in the app, which Play Integrity Fork does not spoof there. The first API level
-comes from the engine (`ro.product.first_api_level` and its fallbacks), because the platform has
-no public API for it; reading the property by reflection from the app was rejected as relying on
-hidden APIs.
+comes from the engine (`ro.product.first_api_level`), which reads system properties directly.
+The device maker sets that property and never updates it. Earlier versions fell back to
+`ro.board.first_api_level` and `ro.board.api_level` when it was missing. Those describe the
+vendor image of the chipset, not the device: `ro.board.first_api_level`
+(`BOARD_SHIPPING_API_LEVEL`) is the level the chipset's software first shipped with, which on a
+device whose vendor image is frozen on an older chipset release is older than the device, and
+`ro.board.api_level` (`BOARD_API_LEVEL`) is the current vendor API level, which on recent
+releases is a `YYYYMM` number such as `202404` rather than an SDK level. The screen showed a wrong
+level on such devices (common outside the Pixel line).
+The level is now unknown when the property is missing. Guessing it from `ro.build.version.sdk`
+was rejected for the same reason: an upgraded device would show its current release.
+`Build.VERSION.DEVICE_INITIAL_SDK_INT` reads the same property; the engine stays the source
+because the status report already carries the value, and moving it would change the format
+between the two halves for no gain.
 
 ## What was taken from AlwaysStrong, and what was not
 

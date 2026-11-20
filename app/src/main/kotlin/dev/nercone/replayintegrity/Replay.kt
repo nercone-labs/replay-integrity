@@ -234,6 +234,9 @@ class Replay(val context: Context) {
         return if (values.bootHook) engine.installHook(privilege, values.watchPackages) else engine.removeHook(privilege)
     }
 
+    /** Installs or removes the boot hook as the settings say, alone (after an update of the application). */
+    suspend fun updateHook(): EngineResult<BootHook> = operations.withLock { synchronizeHook(privilege()) }
+
     suspend fun setBootHook(enabled: Boolean): EngineResult<BootHook> = operations.withLock {
         settings.update { it.copy(bootHook = enabled) }
         synchronizeHook(privilege())

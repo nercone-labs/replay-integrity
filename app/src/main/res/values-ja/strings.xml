@@ -169,6 +169,7 @@
     <string name="keybox_auto_on">更新のたびにキーボックスを取得し、設定に従ってインストール済みのものと置き換えます。手持ちのキーボックスをインポートするとオフになります。</string>
     <string name="keybox_auto_off">キーボックスの自動更新はオフです。インストール済みのキーボックスが保持されます。</string>
     <string name="import_keybox">キーボックスをインポート</string>
+    <string name="no_file_picker">この端末にはファイルを開けるアプリがありません。ファイルマネージャー（ファイル）をインストールまたは有効にしてから、もう一度お試しください。</string>
     <string name="key_usable">%1$s 鍵:使用可能</string>
     <string name="key_unusable">%1$s 鍵:使用不可</string>
     <string name="key_serial">シリアル番号</string>

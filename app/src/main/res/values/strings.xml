@@ -169,6 +169,7 @@
     <string name="keybox_auto_on">Every refresh downloads a keybox, which replaces the installed one as the settings say. Importing your own keybox turns this off.</string>
     <string name="keybox_auto_off">Automatic refresh of the keybox is off; the installed keybox is kept.</string>
     <string name="import_keybox">Import keybox</string>
+    <string name="no_file_picker">No application can open files on this device: install or enable a file manager (Files) and try again.</string>
     <string name="key_usable">%1$s key: usable</string>
     <string name="key_unusable">%1$s key: not usable</string>
     <string name="key_serial">Serial number</string>

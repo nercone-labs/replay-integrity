@@ -249,6 +249,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissOutcome() = state.update { it.copy(outcome = null) }
 
+    /** Shows `text` as a failure that happened outside an operation. */
+    fun fail(text: String) = state.update { it.copy(outcome = Outcome.Failed(text, null)) }
+
     companion object {
         const val SHIZUKU_BINDER_TIMEOUT_MILLIS = 2_000L
     }
