@@ -1,6 +1,7 @@
 package dev.nercone.replayintegrity.config
 
 import android.content.Context
+import android.os.Looper
 import androidx.core.content.edit
 import dev.nercone.replayintegrity.engine.EngineSettings
 import dev.nercone.replayintegrity.engine.KeyRemovalSettings
@@ -141,11 +142,18 @@ class Settings(context: Context) {
         return runCatching { decode(text) }.getOrDefault(Values())
     }
 
-    /** Replaces the settings with `transform` of the current ones, and stores them. */
+    /**
+     * Replaces the settings with `transform` of the current ones, and stores them. The new values
+     * are in effect at once. Off the main thread (the workers), the file is written before this
+     * returns, so that a process the system ends right after the work keeps what it did. On the
+     * main thread, it is written in the background (`apply`): a synchronous write can stall the
+     * screen on slow storage, and the system finishes pending writes when an activity stops.
+     */
     @Synchronized
     fun update(transform: (Values) -> Values) {
         val next = transform(values.value)
-        preferences.edit(commit = true) { putString(VALUES, JSON.encodeToString(Values.serializer(), next)) }
+        val onMainThread = Looper.myLooper() == Looper.getMainLooper()
+        preferences.edit(commit = !onMainThread) { putString(VALUES, JSON.encodeToString(Values.serializer(), next)) }
         values.value = next
     }
 

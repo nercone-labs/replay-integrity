@@ -67,6 +67,16 @@ object AttestationScreen {
             val component = module
             if (uri != null && component != null) model.installModule(component, uri)
         }
+        val noPicker = stringResource(R.string.no_file_picker)
+        // A ROM without a documents application has no activity for the picker, and launching it
+        // would end the application.
+        val pick = { launch: () -> Unit ->
+            try {
+                launch()
+            } catch (_: ActivityNotFoundException) {
+                model.fail(noPicker)
+            }
+        }
         val status = state.status
         Column(
             Modifier.verticalScroll(rememberScrollState()).padding(Widgets.SCREEN_PADDING),
@@ -79,7 +89,7 @@ object AttestationScreen {
             Widgets.Header(stringResource(R.string.section_keybox))
             Keybox(status?.keybox, status?.keyboxInstalled)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { keyboxPicker.launch(KEYBOX_TYPES) }, enabled = idle) {
+                FilledTonalButton(onClick = { pick { keyboxPicker.launch(KEYBOX_TYPES) } }, enabled = idle) {
                     Icon(Icons.Default.FileOpen, null, Modifier.padding(end = 8.dp))
                     Text(stringResource(R.string.import_keybox))
                 }
@@ -100,7 +110,7 @@ object AttestationScreen {
             Widgets.Header(stringResource(R.string.section_fingerprint))
             Fingerprint(status?.fingerprint, status?.fingerprintInstalled)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { fingerprintPicker.launch(FINGERPRINT_TYPES) }, enabled = idle) {
+                FilledTonalButton(onClick = { pick { fingerprintPicker.launch(FINGERPRINT_TYPES) } }, enabled = idle) {
                     Icon(Icons.Default.FileOpen, null, Modifier.padding(end = 8.dp))
                     Text(stringResource(R.string.import_fingerprint))
                 }
@@ -119,7 +129,7 @@ object AttestationScreen {
             Widgets.Header(stringResource(R.string.section_modules))
             Modules(status, idle, onDisableConflicts = model::disableConflicts) { component ->
                 module = component
-                modulePicker.launch(MODULE_TYPES)
+                pick { modulePicker.launch(MODULE_TYPES) }
             }
             Text(stringResource(R.string.modules_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
         }

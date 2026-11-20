@@ -191,6 +191,23 @@ impl PackageManager {
         Ok(PackageManager::parse_packages(&output).into_iter().map(str::to_string).collect())
     }
 
+    /// The packages installed for `user` (`cmd package list packages --user <user>`). Without
+    /// `--user`, the package manager lists the packages of the system user only, which leaves
+    /// out an application installed only in another user or profile: a work profile, Samsung's
+    /// Secure Folder, Xiaomi's Second Space.
+    pub fn installed_for(user: u32) -> Result<Vec<String>, CommandError> {
+        let user = user.to_string();
+        let output = SystemCommand::run(SystemCommand::CMD, &["package", "list", "packages", "--user", &user])?;
+        Ok(PackageManager::parse_packages(&output).into_iter().map(str::to_string).collect())
+    }
+
+    /// The third-party packages (`third_party`) installed for `user`.
+    pub fn third_party_for(user: u32) -> Result<Vec<String>, CommandError> {
+        let user = user.to_string();
+        let output = SystemCommand::run(SystemCommand::CMD, &["package", "list", "packages", "-3", "--user", &user])?;
+        Ok(PackageManager::parse_packages(&output).into_iter().map(str::to_string).collect())
+    }
+
     /// The package names of `cmd package list packages` output (`package:<name>` lines).
     pub fn parse_packages(output: &str) -> Vec<&str> {
         output.lines().filter_map(|line| line.trim().strip_prefix("package:")).filter(|name| !name.is_empty()).collect()

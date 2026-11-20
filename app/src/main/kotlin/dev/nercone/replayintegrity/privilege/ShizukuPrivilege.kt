@@ -4,7 +4,9 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -24,7 +26,10 @@ import rikka.sui.Sui
  */
 class ShizukuPrivilege(val context: Context) : Privilege {
     val mutex = Mutex()
+    /** Written by Shizuku's callback on the main thread too, so it is read from any thread. */
+    @Volatile
     var service: ICommandService? = null
+    val main = Handler(Looper.getMainLooper())
 
     override val kind: Privilege.Kind
         get() = if (isSui) Privilege.Kind.SUI else Privilege.Kind.SHIZUKU
@@ -139,9 +144,26 @@ class ShizukuPrivilege(val context: Context) : Privilege {
                         service = null
                     }
                 }
+                // A connection that timed out or failed would otherwise stay registered with
+                // Shizuku, and every later attempt would add another one. It is released on the
+                // main thread, where Shizuku also walks its connections, so the two never race.
+                val release = {
+                    main.post {
+                        try {
+                            Shizuku.unbindUserService(arguments, connection, false)
+                        } catch (_: RuntimeException) {
+                        }
+                    }
+                    Unit
+                }
+                // Cancelled before it started (the work was stopped): binding now would register
+                // a connection that nothing releases.
+                if (!continuation.isActive) return@suspendCancellableCoroutine
+                continuation.invokeOnCancellation { release() }
                 try {
                     Shizuku.bindUserService(arguments, connection)
                 } catch (error: RuntimeException) {
+                    release()
                     if (continuation.isActive) continuation.resumeWith(Result.failure(PrivilegeException("Shizuku stopped", error)))
                 }
             }

@@ -5,6 +5,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import dev.nercone.replayintegrity.R
 import dev.nercone.replayintegrity.ReplayApplication
+import kotlinx.coroutines.CancellationException
 
 /**
  * Repairs the attestation configuration after a boot: rebuilds the target list, re-applies the
@@ -24,6 +25,10 @@ class RepairWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
             replay.repair(restart = false)
             notifier.cancel(Notifier.BOOT)
             Result.success()
+        } catch (error: CancellationException) {
+            // WorkManager stopped the work (a quota, a lost constraint, a battery manager); it is
+            // not a failure of the repair and must reach WorkManager as a cancellation.
+            throw error
         } catch (error: Exception) {
             if (replay.settings.values.value.notifyFailures) {
                 notifier.notify(Notifier.BOOT, applicationContext.getString(R.string.app_name), applicationContext.getString(R.string.boot_failed, error.message ?: error.toString()))

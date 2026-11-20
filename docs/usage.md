@@ -47,8 +47,8 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
   conflicting modules, and what runs at boot. Tap an item to see its details.
 - **Details**: the privilege in use, the root manager, the last refresh and its problems, the last
   apply, and the engine log of the last operation.
-- **This device**: the real model, Android version, security patch, first API level and build
-  fingerprint.
+- **This device**: the real model, Android version, security patch, first API level (unknown
+  when the device does not report it) and build fingerprint.
 
 ## Protection
 
@@ -138,7 +138,9 @@ framework and the Play Store are always targets; Xposed managers are always left
 
 - **Targets**: which installed applications are added automatically: Google Play only, Google
   Play and wallet applications, or all applications (every third-party application and the
-  wallet applications; the default). An application that checks key attestation itself passes
+  wallet applications; the default). Within the chosen choice, applications installed only in
+  another user or profile (a work profile, Secure Folder, Second Space) count too. An application
+  that checks key attestation itself passes
   only as a target; one that is not a target keeps the device's own keystore.
 - **Key handling**: Automatic, Generate or Patch, for every target but Google Play.
 - **Key handling of Google Play**: the same choice for Play services, its framework and the Play

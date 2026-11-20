@@ -13,6 +13,7 @@ import dev.nercone.replayintegrity.R
 import dev.nercone.replayintegrity.ReplayApplication
 import dev.nercone.replayintegrity.config.Settings
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 
 /**
  * Refreshes the keybox and the fingerprint on a schedule, so the verdict never decays: a keybox
@@ -32,6 +33,9 @@ class RefreshWorker(context: Context, parameters: WorkerParameters) : CoroutineW
         }
         val problems = try {
             replay.refresh().problems
+        } catch (error: CancellationException) {
+            // WorkManager stopped the work; it runs again, and a stop is not a failed refresh.
+            throw error
         } catch (error: Exception) {
             listOf(error.message ?: error.toString())
         }
