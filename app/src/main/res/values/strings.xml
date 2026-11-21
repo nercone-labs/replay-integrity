@@ -63,7 +63,6 @@
     <string name="off">Off</string>
     <string name="unknown">Unknown</string>
     <string name="never">Never</string>
-    <string name="hours_short">%1$dh</string>
     <string name="outcome_refreshed">Refreshed</string>
     <string name="outcome_refreshed_problems">Refreshed with problems</string>
     <string name="outcome_keybox_new">A new keybox was installed.</string>
@@ -135,7 +134,6 @@
     <string name="boot_off">Nothing runs at boot</string>
     <string name="details_title">Details</string>
     <string name="detail_privilege">Privilege</string>
-    <string name="detail_root_manager">Root manager</string>
     <string name="detail_last_refresh">Last refresh</string>
     <string name="detail_last_apply">Last applied</string>
     <string name="last_refresh_problems">%1$s, with %2$d problem(s)</string>
@@ -274,8 +272,7 @@
     <string name="settings_fingerprint_url">Fingerprint URL</string>
     <string name="settings_sources_reset">Use the default sources</string>
     <string name="settings_sources_reset_help">The keybox and fingerprint sources of AlwaysStrong.</string>
-    <string name="settings_sources_help">Only HTTPS is accepted. The keybox may be served as XML or as base64 of it. Every download is checked by the engine before it is installed.</string>
-    <string name="settings_behavior">Applying</string>
+    <string name="settings_sources_help">Only HTTPS is accepted. Every download is checked by the engine before it is installed.</string>
     <string name="settings_restart_on_change">Restart the keystore on changes</string>
     <string name="settings_restart_on_change_help">A new keybox or fingerprint takes effect at once: the keystore daemon restarts, and Play services and the Play Store are ended. Otherwise changes take effect at the next reboot.</string>
     <string name="settings_restart_now">Restart the keystore now</string>
@@ -358,7 +355,7 @@
     <string name="settings_keys_applications_help">A banking or wallet application\'s enrolment. Removing one loses it; an application that checks its key itself may need it removed once its old keybox is revoked.</string>
     <string name="settings_keys_patch">Renew the Play Integrity key on a new security patch</string>
     <string name="settings_keys_patch_help">The key keeps the patch it was made with, which then contradicts the spoofed build.</string>
-    <string name="settings_keys_help">A key made with a keybox that is no longer installed keeps its old certificate chain. Never keeps it; When unusable removes it once that chain is revoked, expired or untrusted; When replaced removes it as soon as the keybox changes. Kept keys are listed under Attestation, where each can be removed.</string>
+    <string name="settings_keys_help">A key made with a keybox that is no longer installed keeps its old certificate chain. Each kind of key has its own setting. Kept keys are listed under Attestation, where each can be removed.</string>
     <string name="key_removal_never">Never</string>
     <string name="key_removal_when_unusable">When unusable</string>
     <string name="key_removal_when_replaced">When replaced</string>
@@ -402,5 +399,48 @@
     <plurals name="keys_kept">
         <item quantity="one">%1$d of %2$d keys was made with an old keybox or security patch and is kept by the settings</item>
         <item quantity="other">%1$d of %2$d keys were made with an old keybox or security patch and are kept by the settings</item>
+    </plurals>
+    <string name="import_keybox_help">Check a keybox file of your own before installing it.</string>
+    <string name="import_fingerprint_help">Check a custom.pif.prop or custom.pif.json before installing it.</string>
+    <string name="spoof_drifted_short">Changed by another script</string>
+    <string name="hero_unreadable">Cannot read the device</string>
+    <string name="hero_unreadable_text">The engine runs as root, but reading the state of the device failed. Check again; the engine log may say more.</string>
+    <string name="detail_root_manager_value">Root manager: %1$s</string>
+    <string name="key_removal_never_help">The key is kept. It keeps working as long as its old keybox is valid.</string>
+    <string name="key_removal_when_unusable_help">Removed once its old chain is revoked, expired or untrusted.</string>
+    <string name="key_removal_when_replaced_help">Removed as soon as the keybox changes.</string>
+    <string name="back">Back</string>
+    <string name="summary_keybox_repaired">The keybox was not well-formed and was written again.</string>
+    <string name="settings_applying">Applying and boot</string>
+    <string name="settings_applying_at_once">Changes take effect at once</string>
+    <string name="settings_applying_at_reboot">Changes wait for a reboot</string>
+    <string name="settings_applying_boot_hook">repaired at boot</string>
+    <string name="settings_applying_no_boot_hook">no boot hook</string>
+    <string name="protection_custom_short">Custom</string>
+    <string name="settings_about_short">Version, engine store, credits</string>
+    <string name="settings_schedule">Schedule</string>
+    <string name="keybox_source_lenient">lenient</string>
+    <string name="keybox_source_add">Add a keybox source</string>
+    <string name="keybox_source_edit">Keybox source</string>
+    <string name="keybox_source_duplicate">This URL is already a source.</string>
+    <string name="settings_fingerprint_source">Fingerprint</string>
+    <string name="targets_rules">Rules</string>
+    <string name="none">None</string>
+    <string name="done">Done</string>
+    <plurals name="summary_stale_kept">
+        <item quantity="one">%1$d stale key kept: the keystore could not delete it yet, and the next repair tries again.</item>
+        <item quantity="other">%1$d stale keys kept: the keystore could not delete them yet, and the next repair tries again.</item>
+    </plurals>
+    <plurals name="keybox_sources">
+        <item quantity="one">%1$d keybox source</item>
+        <item quantity="other">%1$d keybox sources</item>
+    </plurals>
+    <plurals name="hours">
+        <item quantity="one">%1$d hour</item>
+        <item quantity="other">%1$d hours</item>
+    </plurals>
+    <plurals name="every_hours">
+        <item quantity="one">Every hour</item>
+        <item quantity="other">Every %1$d hours</item>
     </plurals>
 </resources>

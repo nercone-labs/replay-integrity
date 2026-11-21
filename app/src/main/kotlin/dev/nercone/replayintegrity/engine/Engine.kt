@@ -35,8 +35,11 @@ class Engine(val context: Context) {
     val executable: String = File(context.applicationInfo.nativeLibraryDir, EXECUTABLE).absolutePath
     val json = EngineJson.json
 
-    /** The directory of the files handed to the engine. */
-    val directory: File get() = File(context.cacheDir, DIRECTORY).apply { mkdirs() }
+    /**
+     * The directory of the files handed to the engine, created when missing: the system may
+     * clear the cache at any time. It touches the disk, so callers run it off the main thread.
+     */
+    fun directory(): File = File(context.cacheDir, DIRECTORY).apply { mkdirs() }
 
     fun decode(output: String): EngineResponse {
         val line = output.lineSequence().lastOrNull { it.startsWith("{") }
@@ -159,6 +162,7 @@ class Engine(val context: Context) {
 
     /** Writes `bytes` to a file named `name` that the engine can read, replacing it whole. */
     suspend fun write(name: String, bytes: ByteArray): File = withContext(Dispatchers.IO) {
+        val directory = directory()
         val file = File(directory, name)
         val temporary = File(directory, "$name.tmp")
         temporary.writeBytes(bytes)

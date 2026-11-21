@@ -73,11 +73,17 @@ android {
     }
 }
 
-val abis = mapOf(
+val allAbis = mapOf(
     "arm64-v8a" to "aarch64-linux-android",
     "armeabi-v7a" to "armv7-linux-androideabi",
     "x86_64" to "x86_64-linux-android",
 )
+// Every ABI is built unless `-Preplay.abis=arm64-v8a,x86_64` names some, for a local build on a
+// machine without every Rust target. A name that is not an ABI above is an error, not ignored.
+val abis = providers.gradleProperty("replay.abis").orNull?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.let { names ->
+    names.forEach { require(it in allAbis) { "replay.abis: unknown ABI $it; known: ${allAbis.keys.joinToString()}" } }
+    allAbis.filterKeys { it in names }
+} ?: allAbis
 val clangPrefix = mapOf(
     "aarch64-linux-android" to "aarch64-linux-android",
     "armv7-linux-androideabi" to "armv7a-linux-androideabi",

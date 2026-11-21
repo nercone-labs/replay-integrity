@@ -17,9 +17,10 @@ import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -44,12 +45,15 @@ import dev.nercone.replayintegrity.engine.InstalledFile
 import dev.nercone.replayintegrity.engine.KeyCategory
 import dev.nercone.replayintegrity.engine.KeyVerdict
 import dev.nercone.replayintegrity.engine.KeyboxVerdict
+import dev.nercone.replayintegrity.engine.Module
 import dev.nercone.replayintegrity.engine.OutdatedKey
 import dev.nercone.replayintegrity.engine.OutdatedReason
+import dev.nercone.replayintegrity.engine.Problem
 import dev.nercone.replayintegrity.engine.SpoofFlag
 import dev.nercone.replayintegrity.engine.StatusReport
+import dev.nercone.replayintegrity.ui.Notices.notices
 
-/** The pieces of attestation: the keybox, the fingerprint, the spoof flags and the modules. */
+/** The pieces of attestation: the keybox, the fingerprint, the outdated keys, the spoof flags and the modules. */
 object AttestationScreen {
     /** The MIME types offered when importing a keybox, a fingerprint or a module. */
     val KEYBOX_TYPES = arrayOf("text/xml", "application/xml", "text/plain", "application/octet-stream")
@@ -59,7 +63,7 @@ object AttestationScreen {
 
     @Composable
     fun Content(state: UiState, settings: Settings.Values, model: AppViewModel) {
-        val idle = state.operation == null && state.privilege?.privilege != null
+        val idle = state.idle
         val keyboxPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(model::inspectKeybox) }
         val fingerprintPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(model::inspectFingerprint) }
         var module by rememberSaveable { mutableStateOf<Component?>(null) }
@@ -78,60 +82,27 @@ object AttestationScreen {
             }
         }
         val status = state.status
-        Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(Widgets.SCREEN_PADDING),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Widgets.Screen {
+            notices(state, settings, model)
             if (status == null) {
-                Widgets.Notice(Widgets.Tone.INFORMATION, stringResource(R.string.no_status_title), stringResource(R.string.no_status_text))
+                item(key = "empty") { Widgets.Notice(Widgets.Tone.INFORMATION, stringResource(R.string.no_status_title), stringResource(R.string.no_status_text)) }
             }
-            HomeScreen.Pending(state, settings, model)
-            Widgets.Header(stringResource(R.string.section_keybox))
-            Keybox(status?.keybox, status?.keyboxInstalled)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { pick { keyboxPicker.launch(KEYBOX_TYPES) } }, enabled = idle) {
-                    Icon(Icons.Default.FileOpen, null, Modifier.padding(end = 8.dp))
-                    Text(stringResource(R.string.import_keybox))
-                }
+            item(key = "keybox") {
+                Keybox(status?.keybox, status?.keyboxInstalled, settings, idle, onImport = { pick { keyboxPicker.launch(KEYBOX_TYPES) } })
             }
-            Text(
-                stringResource(if (settings.autoKeybox) R.string.keybox_auto_on else R.string.keybox_auto_off),
-                style = MaterialTheme.typography.bodySmall,
-                color = Widgets.secondary,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
-
             if (status != null && status.outdatedKeys.isNotEmpty()) {
-                Widgets.Header(stringResource(R.string.section_outdated_keys))
-                OutdatedKeys(status.outdatedKeys, idle, model::removeKey)
-                Text(stringResource(R.string.outdated_keys_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
+                item(key = "outdated") { OutdatedKeys(status.outdatedKeys, idle, model::removeKey) }
             }
-
-            Widgets.Header(stringResource(R.string.section_fingerprint))
-            Fingerprint(status?.fingerprint, status?.fingerprintInstalled)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { pick { fingerprintPicker.launch(FINGERPRINT_TYPES) } }, enabled = idle) {
-                    Icon(Icons.Default.FileOpen, null, Modifier.padding(end = 8.dp))
-                    Text(stringResource(R.string.import_fingerprint))
+            item(key = "fingerprint") {
+                Fingerprint(status?.fingerprint, status?.fingerprintInstalled, settings, idle, onImport = { pick { fingerprintPicker.launch(FINGERPRINT_TYPES) } })
+            }
+            item(key = "spoof") { Spoof(status, settings, model) }
+            item(key = "modules") {
+                Modules(status, idle, onDisableConflicts = model::disableConflicts) { component ->
+                    module = component
+                    pick { modulePicker.launch(MODULE_TYPES) }
                 }
             }
-            Text(
-                stringResource(if (settings.autoFingerprint) R.string.fingerprint_auto_on else R.string.fingerprint_auto_off),
-                style = MaterialTheme.typography.bodySmall,
-                color = Widgets.secondary,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
-
-            Widgets.Header(stringResource(R.string.section_spoof))
-            Spoof(status, settings, model)
-            Text(stringResource(R.string.spoof_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
-
-            Widgets.Header(stringResource(R.string.section_modules))
-            Modules(status, idle, onDisableConflicts = model::disableConflicts) { component ->
-                module = component
-                pick { modulePicker.launch(MODULE_TYPES) }
-            }
-            Text(stringResource(R.string.modules_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary, modifier = Modifier.padding(horizontal = 16.dp))
         }
         state.candidate?.let { Candidate(it, onInstall = { model.install(it) }, onDismiss = model::dismissCandidate) }
     }
@@ -144,7 +115,7 @@ object AttestationScreen {
     @Composable
     fun OutdatedKeys(keys: List<OutdatedKey>, idle: Boolean, onRemove: (OutdatedKey) -> Unit) {
         var confirming by remember { mutableStateOf<OutdatedKey?>(null) }
-        Widgets.Group {
+        Widgets.Section(stringResource(R.string.section_outdated_keys), stringResource(R.string.outdated_keys_help)) {
             keys.forEachIndexed { index, key ->
                 val reasons = key.reasons.map { reason ->
                     when {
@@ -169,7 +140,9 @@ object AttestationScreen {
                 )
             }
         }
-        confirming?.let { key ->
+        // Asked only while the key is still listed: a reading of the device that no longer has it
+        // closes the question, so that a confirmation never removes a key the user no longer sees.
+        confirming?.takeIf { it in keys }?.let { key ->
             Widgets.Confirm(
                 title = stringResource(R.string.outdated_remove_title, key.alias),
                 text = stringResource(if (key.category == KeyCategory.INTEGRITY) R.string.outdated_remove_integrity_text else R.string.outdated_remove_text),
@@ -181,26 +154,23 @@ object AttestationScreen {
     }
 
     @Composable
-    fun Keybox(keybox: KeyboxVerdict?, installed: InstalledFile?) {
-        if (keybox == null) {
-            Widgets.Group { Widgets.Item(0, 1, stringResource(R.string.keybox_none), stringResource(R.string.keybox_none_help), Icons.Default.Key) }
-            return
-        }
-        val count = keybox.keys.size + 1
-        Widgets.Group {
-            Widgets.Panel(0, count) {
-                Widgets.Field(stringResource(R.string.keybox_summary), stringResource(R.string.keybox_usable, keybox.usableKeys, keybox.keys.size))
-                Widgets.Field(
-                    stringResource(R.string.keybox_strong),
-                    stringResource(
-                        if (keybox.strongCapable) R.string.yes else R.string.keybox_strong_needs,
-                    ),
-                )
-                Widgets.Field(stringResource(R.string.keybox_revocation), stringResource(if (keybox.revocationChecked) R.string.keybox_revocation_checked else R.string.keybox_revocation_unchecked))
-                keybox.expires?.let { Widgets.Field(stringResource(R.string.keybox_expires), Labels.date(it)) }
-                installed?.let { InstalledFields(it) }
+    fun Keybox(keybox: KeyboxVerdict?, installed: InstalledFile?, settings: Settings.Values, idle: Boolean, onImport: () -> Unit) {
+        val help = stringResource(if (settings.autoKeybox) R.string.keybox_auto_on else R.string.keybox_auto_off)
+        Widgets.Section(stringResource(R.string.section_keybox), help) {
+            val count = (keybox?.keys?.size ?: 0) + 2
+            if (keybox == null) {
+                Widgets.Item(0, count, stringResource(R.string.keybox_none), stringResource(R.string.keybox_none_help), Icons.Default.Key)
+            } else {
+                Widgets.Panel(0, count) {
+                    Widgets.Field(stringResource(R.string.keybox_summary), stringResource(R.string.keybox_usable, keybox.usableKeys, keybox.keys.size))
+                    Widgets.Field(stringResource(R.string.keybox_strong), stringResource(if (keybox.strongCapable) R.string.yes else R.string.keybox_strong_needs))
+                    Widgets.Field(stringResource(R.string.keybox_revocation), stringResource(if (keybox.revocationChecked) R.string.keybox_revocation_checked else R.string.keybox_revocation_unchecked))
+                    keybox.expires?.let { Widgets.Field(stringResource(R.string.keybox_expires), Labels.date(it)) }
+                    installed?.let { InstalledFields(it) }
+                }
+                keybox.keys.forEachIndexed { index, key -> Key(index + 1, count, key) }
             }
-            keybox.keys.forEachIndexed { index, key -> Key(index + 1, count, key) }
+            Widgets.Item(count - 1, count, stringResource(R.string.import_keybox), stringResource(R.string.import_keybox_help), Icons.Default.FileOpen, enabled = idle, onClick = onImport)
         }
     }
 
@@ -227,16 +197,18 @@ object AttestationScreen {
     }
 
     @Composable
-    fun Fingerprint(fingerprint: FingerprintReport?, installed: InstalledFile?) {
-        Widgets.Group {
+    fun Fingerprint(fingerprint: FingerprintReport?, installed: InstalledFile?, settings: Settings.Values, idle: Boolean, onImport: () -> Unit) {
+        val help = stringResource(if (settings.autoFingerprint) R.string.fingerprint_auto_on else R.string.fingerprint_auto_off)
+        Widgets.Section(stringResource(R.string.section_fingerprint), help) {
             if (fingerprint == null) {
-                Widgets.Item(0, 1, stringResource(R.string.fingerprint_none), stringResource(R.string.fingerprint_none_help), Icons.Default.Fingerprint)
-                return@Group
+                Widgets.Item(0, 2, stringResource(R.string.fingerprint_none), stringResource(R.string.fingerprint_none_help), Icons.Default.Fingerprint)
+            } else {
+                Widgets.Panel(0, 2) {
+                    FingerprintFields(fingerprint)
+                    installed?.let { InstalledFields(it) }
+                }
             }
-            Widgets.Panel(0, 1) {
-                FingerprintFields(fingerprint)
-                installed?.let { InstalledFields(it) }
-            }
+            Widgets.Item(1, 2, stringResource(R.string.import_fingerprint), stringResource(R.string.import_fingerprint_help), Icons.Default.FileOpen, enabled = idle, onClick = onImport)
         }
     }
 
@@ -249,43 +221,51 @@ object AttestationScreen {
         if (fingerprint.problems.isNotEmpty()) Widgets.Field(stringResource(R.string.key_problems), fingerprint.problems.map { Labels.problem(it) }.joinToString("\n"))
     }
 
-    /** The spoof flags: what the settings choose, what `apply` writes, and what the module reads now. */
+    /**
+     * The spoof flags: for each, what the settings choose, what `apply` writes and what the
+     * module reads now. A flag that another script changed is marked.
+     */
     @Composable
     fun Spoof(status: StatusReport?, settings: Settings.Values, model: AppViewModel) {
         val applied = status?.appliedSpoof().orEmpty()
         val live = status?.integrity?.spoofFlags().orEmpty()
-        Widgets.Group {
+        val count = SpoofFlag.ALL.size + if (status?.securityPatch != null) 1 else 0
+        Widgets.Section(stringResource(R.string.section_spoof), stringResource(R.string.spoof_help)) {
             SpoofFlag.ALL.forEachIndexed { index, key ->
-                Widgets.Panel(index, SpoofFlag.ALL.size) {
-                    Text(Labels.spoofFlag(key), style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        listOfNotNull(
-                            key,
-                            applied[key]?.let { stringResource(R.string.spoof_value_applied, onOff(it)) },
-                            live[key]?.let { stringResource(R.string.spoof_value_live, onOff(it)) },
-                        ).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (live[key] != null && applied[key] != null && live[key] != applied[key]) MaterialTheme.colorScheme.error else Widgets.secondary,
-                    )
-                    val choice: Boolean? = settings.spoofOverrides[key]
-                    Widgets.Segments(
-                        options = listOf<Boolean?>(null, true, false),
-                        selected = choice,
-                        describe = { option ->
-                            when (option) {
-                                null -> stringResource(R.string.spoof_recommended)
-                                true -> stringResource(R.string.on)
-                                false -> stringResource(R.string.off)
-                            }
-                        },
-                        onSelect = { model.setSpoof(key, it) },
-                    )
-                }
+                val choice: Boolean? = settings.spoofOverrides[key]
+                val drifted = live[key] != null && applied[key] != null && live[key] != applied[key]
+                Widgets.ChoiceItem(
+                    index, count,
+                    headline = Labels.spoofFlag(key),
+                    options = listOf<Boolean?>(null, true, false),
+                    selected = choice,
+                    describe = { option -> spoofChoice(option) },
+                    onSelect = { model.setSpoof(key, it) },
+                    icon = Icons.Default.Tune,
+                    supporting = listOfNotNull(
+                        spoofChoice(choice),
+                        applied[key]?.let { stringResource(R.string.spoof_value_applied, onOff(it)) },
+                        live[key]?.let { stringResource(R.string.spoof_value_live, onOff(it)) },
+                    ).joinToString(" · "),
+                    description = key,
+                    trailing = if (drifted) {
+                        { Icon(Icons.Default.Warning, stringResource(R.string.spoof_drifted_short), tint = MaterialTheme.colorScheme.error) }
+                    } else {
+                        null
+                    },
+                )
+            }
+            status?.securityPatch?.let { patch ->
+                Widgets.Panel(count - 1, count) { Widgets.Field(stringResource(R.string.security_patch_file), patch, monospace = true) }
             }
         }
-        status?.securityPatch?.let { patch ->
-            Widgets.Group { Widgets.Panel(0, 1) { Widgets.Field(stringResource(R.string.security_patch_file), patch, monospace = true) } }
-        }
+    }
+
+    @Composable
+    fun spoofChoice(choice: Boolean?): String = when (choice) {
+        null -> stringResource(R.string.spoof_recommended)
+        true -> stringResource(R.string.on)
+        false -> stringResource(R.string.off)
     }
 
     @Composable
@@ -294,62 +274,72 @@ object AttestationScreen {
     @Composable
     fun Modules(status: StatusReport?, idle: Boolean, onDisableConflicts: () -> Unit, onInstall: (Component) -> Unit) {
         val context = LocalContext.current
-        Widgets.Group {
-            Component.entries.forEachIndexed { index, component ->
-                val module = status?.component(component)?.module
-                Widgets.Panel(index, Component.entries.size) {
-                    Text(Labels.component(component), style = MaterialTheme.typography.bodyLarge)
-                    if (module == null) {
-                        Text(stringResource(R.string.component_missing, Labels.moduleName(component)), style = MaterialTheme.typography.bodyMedium, color = Widgets.secondary)
-                    } else {
-                        Widgets.Field(stringResource(R.string.module_name), "${module.name ?: module.id} (${module.id})")
-                        Widgets.Field(stringResource(R.string.module_version), listOfNotNull(module.version, module.versionCode?.toString()).joinToString(" / "))
-                        module.author?.let { Widgets.Field(stringResource(R.string.module_author), it) }
-                        Widgets.Field(
-                            stringResource(R.string.module_state),
-                            stringResource(
-                                when {
-                                    module.disabled -> R.string.module_disabled
-                                    module.removing -> R.string.module_removing
-                                    module.updatePending -> R.string.module_update_pending
-                                    else -> R.string.module_active
-                                },
-                            ),
-                        )
-                    }
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { onInstall(component) }, enabled = idle) {
-                            Icon(Icons.Default.Unarchive, null, Modifier.padding(end = 8.dp))
-                            Text(stringResource(R.string.module_install))
+        Column(verticalArrangement = Arrangement.spacedBy(Widgets.SPACING)) {
+            Widgets.Section(stringResource(R.string.section_modules), stringResource(R.string.modules_help)) {
+                Component.entries.forEachIndexed { index, component ->
+                    val module = status?.component(component)?.module
+                    Widgets.Panel(index, Component.entries.size) {
+                        Text(Labels.component(component), style = MaterialTheme.typography.titleMedium)
+                        if (module == null) {
+                            Text(stringResource(R.string.component_missing, Labels.moduleName(component)), style = MaterialTheme.typography.bodyMedium, color = Widgets.secondary)
+                        } else {
+                            ModuleFields(module)
                         }
-                        TextButton(onClick = {
-                            try {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Labels.moduleReleases(component))))
-                            } catch (_: ActivityNotFoundException) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { onInstall(component) }, enabled = idle) {
+                                Icon(Icons.Default.Unarchive, null, Modifier.padding(end = 8.dp))
+                                Text(stringResource(R.string.module_install))
                             }
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.OpenInNew, null, Modifier.padding(end = 8.dp))
-                            Text(stringResource(R.string.module_releases))
+                            TextButton(onClick = {
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Labels.moduleReleases(component))))
+                                } catch (_: ActivityNotFoundException) {
+                                }
+                            }) {
+                                Icon(Icons.AutoMirrored.Filled.OpenInNew, null, Modifier.padding(end = 8.dp))
+                                Text(stringResource(R.string.module_releases))
+                            }
                         }
                     }
                 }
             }
-        }
-        status?.conflicts?.takeIf { it.isNotEmpty() }?.let { conflicts ->
-            val text = conflicts.joinToString("\n") { "${it.name ?: it.id} (${it.id})" } + "\n" + stringResource(R.string.conflicts_disable_help)
-            Widgets.Notice(Widgets.Tone.ERROR, stringResource(R.string.check_conflicts), text) {
-                TextButton(onClick = onDisableConflicts, enabled = idle) { Text(stringResource(R.string.conflicts_disable)) }
+            status?.conflicts?.takeIf { it.isNotEmpty() }?.let { conflicts ->
+                val text = conflicts.joinToString("\n") { "${it.name ?: it.id} (${it.id})" } + "\n" + stringResource(R.string.conflicts_disable_help)
+                Widgets.Notice(Widgets.Tone.ERROR, stringResource(R.string.check_conflicts), text) {
+                    TextButton(onClick = onDisableConflicts, enabled = idle) { Text(stringResource(R.string.conflicts_disable)) }
+                }
             }
         }
+    }
+
+    @Composable
+    fun ModuleFields(module: Module) {
+        Widgets.Field(stringResource(R.string.module_name), "${module.name ?: module.id} (${module.id})")
+        Widgets.Field(stringResource(R.string.module_version), listOfNotNull(module.version, module.versionCode?.toString()).joinToString(" / "))
+        module.author?.let { Widgets.Field(stringResource(R.string.module_author), it) }
+        Widgets.Field(
+            stringResource(R.string.module_state),
+            stringResource(
+                when {
+                    module.disabled -> R.string.module_disabled
+                    module.removing -> R.string.module_removing
+                    module.updatePending -> R.string.module_update_pending
+                    else -> R.string.module_active
+                },
+            ),
+        )
+    }
+
+    /** Whether the engine accepts `candidate` for installation: a keybox needs a key that matches its certificate. */
+    fun installable(candidate: Replay.Candidate): Boolean = when (candidate) {
+        is Replay.Candidate.Keybox -> candidate.verdict.keys.isNotEmpty() && candidate.verdict.keys.none { key -> key.problems.any { it.kind == Problem.KIND_MISMATCH } }
+        is Replay.Candidate.Fingerprint -> candidate.report.ok
     }
 
     /** Shows what the engine found in a file the user chose, and asks whether to install it. */
     @Composable
     fun Candidate(candidate: Replay.Candidate, onInstall: () -> Unit, onDismiss: () -> Unit) {
-        val installable = when (candidate) {
-            is Replay.Candidate.Keybox -> candidate.verdict.keys.isNotEmpty() && candidate.verdict.keys.none { key -> key.problems.any { it.kind == "keyMismatch" } }
-            is Replay.Candidate.Fingerprint -> candidate.report.ok
-        }
+        val installable = installable(candidate)
         AlertDialog(
             onDismissRequest = onDismiss,
             icon = { Icon(if (candidate is Replay.Candidate.Keybox) Icons.Default.Key else Icons.Default.Extension, null) },
