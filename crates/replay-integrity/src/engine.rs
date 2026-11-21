@@ -212,10 +212,12 @@ impl Engine {
         String::from_utf8(bytes.to_vec()).map_err(|_| ReplayError::Rejected(vec![format!("the {what} is not UTF-8 text")]))
     }
 
-    /// Loads the certificate status list from its JSON, if the application fetched it. Without
-    /// it, revocation is not checked and the engine says so.
+    /// The verifier of keyboxes, with the certificate status list of `status_json` or else the
+    /// copy `apply` saved (`key_status_list`): the application may have none to give when the
+    /// list cannot be downloaded, and a keybox must not then look unrevoked when the engine knows
+    /// better. Without either, revocation is not checked and the engine says so.
     fn verifier(&mut self, status_json: Option<&str>) -> Verifier {
-        Verifier::new(self.status_list(status_json))
+        Verifier::new(self.key_status_list(status_json))
     }
 
     /// The certificate status list of `status_json`; `None` without one, or with a warning
@@ -559,7 +561,7 @@ impl Engine {
             let category = KeyCategory::of(&key, &key_packages);
             let mut reasons = Vec::new();
             if key.is_signed_by_other(&signers) {
-                let unusable = key.signer_problems(now, status, &anchors).is_some_and(|problems| !problems.is_empty());
+                let unusable = key.signer_problems(now, status, &anchors).is_some_and(|problems| PersistedKey::is_unusable(&problems));
                 reasons.push(OutdatedReason::OldKeybox { unusable });
             }
             if category == KeyCategory::Integrity

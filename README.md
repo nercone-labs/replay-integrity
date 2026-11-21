@@ -36,7 +36,7 @@ Like [TypeFace Droplet](https://github.com/nercone-labs/typeface-droplet), the a
 - `crates/keybox` — the attestation keybox XML format.
 - `crates/prop` — `key=value` property files that keep their comments and order.
 - `crates/android` — Android system interfaces (properties, the package manager, processes, capabilities).
-- `crates/replay` — the engine binary that ties these together and drives the two modules.
+- `crates/replay-integrity` — the engine binary that ties these together and drives the two modules.
 
 The network is left to the app, which has ordinary TLS: it downloads the keybox, the fingerprint and the status list and hands the bytes to the engine, which parses, checks and installs them. The engine performs no network access and never makes a trust decision from unchecked input.
 

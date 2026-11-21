@@ -28,6 +28,8 @@ impl SystemProperty {
             if length <= 0 {
                 return None;
             }
+            // `c_char` is `i8` on x86 and `u8` on ARM: the cast is needed on one of them only.
+            #[allow(clippy::unnecessary_cast)]
             let bytes: Vec<u8> = value[..length as usize].iter().map(|byte| *byte as u8).collect();
             Some(String::from_utf8_lossy(&bytes).into_owned())
         }

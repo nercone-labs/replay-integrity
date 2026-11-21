@@ -62,7 +62,9 @@ object AttestationScreen {
     val MODULE_TYPES = arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
 
     @Composable
-    fun Content(state: UiState, settings: Settings.Values, model: AppViewModel) {
+    fun Content(data: ScreenData, model: AppViewModel) {
+        val state = data.state
+        val settings = data.settings
         val idle = state.idle
         val keyboxPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(model::inspectKeybox) }
         val fingerprintPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(model::inspectFingerprint) }
@@ -83,7 +85,7 @@ object AttestationScreen {
         }
         val status = state.status
         Widgets.Screen {
-            notices(state, settings, model)
+            notices(data, model)
             if (status == null) {
                 item(key = "empty") { Widgets.Notice(Widgets.Tone.INFORMATION, stringResource(R.string.no_status_title), stringResource(R.string.no_status_text)) }
             }

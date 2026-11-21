@@ -75,11 +75,11 @@ class ConditionTest {
         val settings = applied.copy(extraPackages = listOf("a.b", "c.d"))
         val same = UiState(status = StatusReport(settings = settings.engine().copy(extraPackages = listOf("c.d", "a.b"))))
         val other = UiState(status = StatusReport(settings = settings.engine().copy(targetScope = TargetScope.PLAY)))
-        assertFalse(Notices.pending(same, settings))
-        assertTrue(Notices.pending(other, settings))
+        assertFalse(ScreenData(same, settings).pending)
+        assertTrue(ScreenData(other, settings).pending)
         // Nothing is pending before the first apply, or without a reading of the device.
-        assertFalse(Notices.pending(other, settings.copy(applied = false)))
-        assertFalse(Notices.pending(UiState(), settings))
-        assertFalse(Notices.pending(UiState(status = StatusReport(settings = EngineSettings())), Settings.Values()))
+        assertFalse(ScreenData(other, settings.copy(applied = false)).pending)
+        assertFalse(ScreenData(UiState(), settings).pending)
+        assertFalse(ScreenData(UiState(status = StatusReport(settings = EngineSettings())), Settings.Values()).pending)
     }
 }

@@ -78,6 +78,22 @@ data class UiState(
     val idle: Boolean get() = ready && operation == null && privilege?.privilege != null
 }
 
+/**
+ * What every screen shows: the state of the operations and of the device, and the settings, read
+ * together so that a screen never mixes two moments.
+ */
+data class ScreenData(val state: UiState, val settings: Settings.Values) {
+    /**
+     * Whether the settings the engine reads changed since they were last applied: the screens
+     * then offer to apply them. Nothing is pending before the first application, or without a
+     * reading of the device.
+     */
+    val pending: Boolean by lazy {
+        val status = state.status
+        status != null && settings.applied && !settings.engine().sameAs(status.settings)
+    }
+}
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val replay: Replay = (application as ReplayApplication).replay
     val settings: StateFlow<Settings.Values> = replay.settings.values
@@ -87,6 +103,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     init {
         RefreshWorker.schedule(application, settings.value, replace = false)
         run(Operation.PREPARING) {
+            replay.discardImports()
             state.update { it.copy(ready = true) }
             // Shizuku sends its binder once this application comes to the foreground; choosing
             // before it arrives would pass it over for su without asking for its permission.
@@ -214,7 +231,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         finish(Outcome.Installed(repaired), repaired.log)
     }
 
-    fun dismissCandidate() = state.update { it.copy(candidate = null) }
+    fun dismissCandidate() {
+        val candidate = state.value.candidate ?: return
+        state.update { it.copy(candidate = null) }
+        viewModelScope.launch { replay.discard(candidate.file) }
+    }
 
     fun installModule(component: Component, uri: Uri) = run(Operation.INSTALLING_MODULE) {
         val result = replay.installModule(component, uri)

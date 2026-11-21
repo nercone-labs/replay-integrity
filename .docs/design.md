@@ -555,7 +555,7 @@ Three defects of the earlier hook were fixed together:
 
 - It ran the engine from the app's native library directory. That path changes with every
   update of the app (`/data/app/~~random/...`), so the hook silently stopped working after an
-  update. The hook now runs a copy of the engine in the store (`/data/adb/replay-integrity/replay`),
+  update. The hook now runs a copy of the engine in the store (`/data/adb/replay-integrity/replay-integrity`),
   copied whenever the hook is installed; this is the approach of Droplet.
 - It ran without the user's settings, so the spoof overrides were replaced by the recommended
   flags at every boot. `apply` now saves the settings it applied to the store (`settings.json`),
@@ -650,6 +650,14 @@ release.
   the main thread, where Shizuku walks its connections, because releasing from a worker's thread
   while Shizuku delivers a connection could modify its set during that walk. A connection is not
   bound at all when the caller was cancelled before it started.
+- **A download has a deadline** (`Downloader.TOTAL_TIMEOUT_MILLIS`). The timeout of each read
+  never ends a server that sends a byte now and then, and a read blocked on a socket answers
+  neither to the timeout nor to the cancellation of the coroutine; a refresh could hold the lock
+  of the operations for hours. A watchdog closes the connection when the time is up or the caller
+  is cancelled. Redirects are counted as such: five are followed, where four were.
+- **Keyboxes do not stay in the cache.** A downloaded keybox, and one the user chose, holds
+  private keys; it is deleted once it was installed or dismissed, so that they are kept only
+  where the keystore reads them and in the store.
 - **File pickers.** A ROM without a documents application has no activity for `OpenDocument`; the
   application now says so instead of ending.
 
@@ -677,6 +685,14 @@ and the target rules pushed the target list below the fold.
 - **Wide windows** get a navigation rail instead of the bar (from 600 dp) and centre the content
   at a readable width; the home screen puts the checklist beside the verdict from 840 dp. The
   window size is read from `LocalWindowInfo`, again without the adaptive library.
+- **Both applications share their frame and their status card** (`Frame`, `Widgets.Hero`): the
+  frame was written twice, line for line, and the cards of the home screens differed only in
+  their emblem. The emblem is the rounded hexagon of the application icon, coloured by the state
+  (primary when it is as wanted, the error colour when it needs the user, a neutral outline
+  while it is unknown); it turns when the state becomes good, and back when it no longer is.
+- **The settings list the pages of the application first**, and those every application of the
+  kind has last: Privilege, then About. About shows the icon and the version of the application,
+  where its engine keeps its files, and a link to its source.
 - **A status that cannot be read is a state of its own** (`HomeScreen.Condition.UNREADABLE`).
   Before, a failed `status` left the status empty, which the home screen took for "still
   checking": it showed a spinner and "Checking" for ever, and the failure replaced the outcome of
@@ -714,10 +730,38 @@ and the target rules pushed the target list below the fold.
 - **Tests that need Linux run only there.** The inotify and `flock` tests ran on every host and
   failed on macOS, where the engine is developed but never runs; they still run in CI on Linux.
 
+- **A wrong clock does not make a key unusable.** Early in a boot, when the boot hook judges the
+  persisted keys, the clock of many devices is behind (the time is set from the network later).
+  The chain of an old keybox then read as "not valid yet", which counted as unusable, and
+  `WhenUnusable` removed keys that still worked, the enrolments it exists to keep. A certificate
+  of such a chain that is not valid yet means the clock is behind, because the chain was valid
+  when the key was made: the validity periods then tell nothing, and only the other problems
+  count (`PersistedKey::is_unusable`).
+- **Keyboxes are judged with the saved status list** when the application gives none (it cannot
+  download it, and the system cleared its cache), as persisted keys already were; a revoked
+  keybox no longer looks unrevoked then when it is installed or when the state is read, which
+  run as root. Checking a file the user chose runs as the application, which cannot read the
+  store, and tells that revocation was not checked when it has no list of its own. The application keeps a downloaded list only when it
+  has the shape of one, so that an error page served with success never replaces a good copy.
+  With `WhenNeeded`, a keybox whose revocation is not known is still kept when it is usable:
+  replacing a working keybox may cost the enrolments of the keys attested with it.
+- **Nesting in a keybox document is bounded** (`Node::MAX_DEPTH`): the parser keeps its own
+  stack, but the tree is dropped recursively, and a document nested a million levels deep (well
+  under the size of a download) overflowed the stack of the engine.
+- **A watcher that runs an earlier copy of the engine is ended** whenever the hook is installed
+  (`PackageWatcher::is_outdated`), not only when the copy was just replaced: when ending it timed
+  out once, the next installation found the copy unchanged and left the old engine watching.
+
 Not changed, but known: removing the service script by hand does not stop a running watcher until
 the package list next changes (`hook remove` and `--no-watch` do stop it), and a keystore daemon
 that does not come back within the restart timeout fails the whole `apply`, although the
-configuration was already written.
+configuration was already written. The engine runs in the cgroup of
+the application that started it when `su` raises the calling process (KernelSU, APatch): the
+system may then freeze or end it with the application, and a keystore supervisor it starts goes
+with it. This was found by reading, not seen on a device, and moving the engine to the root
+cgroups needs one to test on. `Engine::restart` ends the Play processes (and, when the settings
+say so, the background applications) also after a repair at boot; and
+`KeystoreConfig::fingerprint_directory` names the store of the engine.
 
 ## Information the app does not take from the engine
 
@@ -793,7 +837,7 @@ The rest was left out on purpose:
 
 ## The package watcher
 
-`replay watch --package <application>` is a process that runs while the system runs. It waits
+`replay-integrity watch --package <application>` is a process that runs while the system runs. It waits
 until `sys.boot_completed`, rebuilds `target.txt` with the settings saved by the last `apply`,
 then waits for `/data/system/packages.list` to change and rebuilds the list again, three seconds
 after a change, so that the several writes of one installation cause one rebuild. The package
@@ -864,20 +908,34 @@ same code. The parts are:
   manager, the activity manager, processes, capabilities and properties. Each engine uses only
   some of them; the unused ones are left out of the binary by the linker, and one crate
   for both is simpler to keep equal than two crates that differ by a few modules.
-- **`crates/replay/src/log.rs`**, byte for byte.
+- **`crates/replay-integrity/src/log.rs`**, byte for byte.
 - **The `privilege` package** of the application (`Privilege`, `PrivilegeSelector`,
   `RootPrivilege`, `ShizukuPrivilege`, `CommandService`, `ProcessRunner` and
   `ICommandService.aidl`), which differs only in its `package` line.
-- **`ui/Widgets.kt`**, which differs only in its `package` line and its import of `R`. Parts that
-  belong to one application stay out of it (the editor of variation axes is
-  `CustomizeScreen.Axes` in TypeFace Droplet).
-- The shared labels at the top of `ui/Labels` (`privilege`, `privilegeChoice`, `describe`,
-  `rootManager`, `rootManagers`), and the shape of the frame (`Navigator`, `Route`) and of the
-  notice of changes not applied yet (`Notices.Pending`).
+- **`engine/EngineProtocol.kt`**: how the application reads what its engine prints (the
+  response, its log, `EngineException`, `EngineResult`). The two copies of `Engine.decode` and
+  `Engine.result` had drifted (one told the output of `su` when the engine printed nothing, the
+  other did not). The JSON settings stay each application's (`EngineJson`), because Replay
+  Integrity coerces unknown values to their defaults and TypeFace Droplet must not: it would
+  rewrite a configuration of a newer version with values it does not know replaced.
+- **`ui/Widgets.kt`**, the parts every screen is made of, including the status card of the home
+  screen (`Hero`, with the hexagon of the application icon as its emblem), its buttons
+  (`Actions`) and the name of the application with its icon (`Identity`). Parts that belong to
+  one application stay out of it (the editor of variation axes is `CustomizeScreen.Axes` in
+  TypeFace Droplet).
+- **`ui/Frame.kt`**, the frame: the top bar, the navigation (a bar, or a rail in a wide window)
+  and the screen of the route, generic over the destinations of each application
+  (`Frame.Destination`), with the dialog of a restricted root and the sheet of the engine log.
+- **`ui/Privileges.kt`**, what the screens show of the privilege: its words, the guide to get one
+  (`Setup`) and the page of the settings that chooses it (`Choices`).
+- The shared labels at the top of `ui/Labels` (`rootManager`, `rootManagers`), the shape of the
+  application (`Navigator`, `Route`, `ScreenData` with its `pending`) and of the notice of
+  changes not applied yet (`Notices.Pending`).
 - The build files outside the application's own steps: `build.gradle.kts`, `gradle.properties`,
   `gradle/libs.versions.toml`, `rustfmt.toml`, and `app/proguard-rules.pro` apart from its package names.
 
-A change to one of these parts is made in both repositories, in the same words. The copies are
+Each shared Kotlin file differs only in its `package` line and the package names of its
+imports. A change to one of these parts is made in both repositories, in the same words. The copies are
 checked with `diff -r crates/android ../typeface-droplet/crates/android`, and with `diff` after
 replacing the package names for the Kotlin files.
 
@@ -886,3 +944,23 @@ dependency and a published Gradle library. It was set aside for now. Each reposi
 its own today, from one checkout, with every Gradle dependency verified
 (`gradle/verification-metadata.xml`); a submodule makes every checkout and the CI depend on a
 second repository, and a published library must be published and verified on every change.
+
+## Names of the engine
+
+The core crate of each engine had a short name (`replay`), the name of its executable, of the
+library the application packages (`libreplay.so`) and of the copy the boot hook runs. Every crate now
+bears the full name of its application, `replay-integrity` (the library `replay_integrity`), and so do the
+executable, `libreplay-integrity.so` (a hyphen is allowed in the name of a native library:
+`isFilenameSafe` of `frameworks/base/libs/androidfw/ApkParsing.cpp` accepts it) and the copy in
+the store. The names of the data in the store (its log, state and configuration) are kept, so an
+update loses nothing.
+
+The copy of the engine under its earlier name keeps running until the boot hook is installed
+again by the updated application: the scripts of the earlier version name it. Installing the hook
+writes the scripts that name the new copy first, and only then removes the earlier copy
+(`LEGACY_EXECUTABLES`), so no script ever names a missing file. A package watcher that an
+earlier version started runs that copy, and is recognised by either name, so that installing the
+hook ends it (`PackageWatcher::is_watcher`).
+
+The Gradle property that limits the ABIs of a local build is `engine.abis` in both applications,
+so that the build files differ only in the names of the application.

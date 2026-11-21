@@ -7,24 +7,10 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
-import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 
-/** A failed engine command, with the engine log of the attempt. */
-class EngineException(val kind: String, message: String, val log: List<LogLine>) : Exception(message) {
-    companion object {
-        /** The engine runs as root, but the root manager removed the capabilities it needs. */
-        const val RESTRICTED = "restricted"
-        const val TIMEOUT = "timeout"
-        const val OUTPUT = "output"
-    }
-}
-
-/** The successful result of an engine command, with the engine log. */
-data class EngineResult<T>(val value: T, val log: List<LogLine>)
-
 /**
- * The Rust engine (`replay`), packaged as `libreplay.so` in the native library directory.
+ * The Rust engine (`replay-integrity`), packaged as `libreplay-integrity.so` in the native library directory.
  * Commands that read or change the system run as root through a `Privilege`; checking a
  * downloaded keybox or fingerprint runs as the application itself.
  *
@@ -41,54 +27,13 @@ class Engine(val context: Context) {
      */
     fun directory(): File = File(context.cacheDir, DIRECTORY).apply { mkdirs() }
 
-    fun decode(output: String): EngineResponse {
-        val line = output.lineSequence().lastOrNull { it.startsWith("{") }
-            ?: throw EngineException(EngineException.OUTPUT, "the engine printed no result: ${output.take(500)}", emptyList())
-        return try {
-            json.decodeFromString(EngineResponse.serializer(), line)
-        } catch (error: SerializationException) {
-            throw EngineException(EngineException.OUTPUT, "the engine printed an invalid result: ${error.message}", emptyList())
-        } catch (error: IllegalArgumentException) {
-            throw EngineException(EngineException.OUTPUT, "the engine printed an invalid result: ${error.message}", emptyList())
-        }
-    }
-
-    fun <T> result(response: EngineResponse, serializer: KSerializer<T>): EngineResult<T> {
-        val error = response.error
-        if (!response.ok || error != null) {
-            throw EngineException(error?.kind ?: "unknown", error?.message ?: "the engine failed", response.log)
-        }
-        val value = response.result ?: throw EngineException(EngineException.OUTPUT, "the engine returned no result", response.log)
-        return try {
-            EngineResult(json.decodeFromJsonElement(serializer, value), response.log)
-        } catch (error: SerializationException) {
-            throw EngineException(EngineException.OUTPUT, "the engine returned an unexpected result: ${error.message}", response.log)
-        } catch (error: IllegalArgumentException) {
-            throw EngineException(EngineException.OUTPUT, "the engine returned an unexpected result: ${error.message}", response.log)
-        }
-    }
-
     /** Runs the engine as the application, for checking files. */
     suspend fun <T> run(arguments: List<String>, serializer: KSerializer<T>, timeoutMillis: Long = TIMEOUT_MILLIS): EngineResult<T> =
-        withContext(Dispatchers.IO) {
-            val output = ProcessRunner.run(listOf(executable) + arguments, timeoutMillis)
-            if (output.exitCode == ProcessRunner.TIMEOUT_EXIT_CODE && output.stdout.isBlank()) {
-                throw EngineException(EngineException.TIMEOUT, "the engine did not finish in time", emptyList())
-            }
-            result(decode(output.stdout), serializer)
-        }
+        withContext(Dispatchers.IO) { EngineProtocol.read(json, ProcessRunner.run(listOf(executable) + arguments, timeoutMillis), serializer) }
 
     /** Runs the engine through `privilege`. */
-    suspend fun <T> run(privilege: Privilege, arguments: List<String>, serializer: KSerializer<T>, timeoutMillis: Long = TIMEOUT_MILLIS): EngineResult<T> {
-        val output = privilege.execute(listOf(executable) + arguments, timeoutMillis)
-        if (output.exitCode == ProcessRunner.START_FAILURE_EXIT_CODE && output.stdout.isBlank()) {
-            throw EngineException(EngineException.OUTPUT, "the engine could not be started: ${output.stderr.take(500)}", emptyList())
-        }
-        if (output.exitCode == ProcessRunner.TIMEOUT_EXIT_CODE && output.stdout.isBlank()) {
-            throw EngineException(EngineException.TIMEOUT, "the engine did not finish in time: ${output.stderr.take(500)}", emptyList())
-        }
-        return result(decode(output.stdout), serializer)
-    }
+    suspend fun <T> run(privilege: Privilege, arguments: List<String>, serializer: KSerializer<T>, timeoutMillis: Long = TIMEOUT_MILLIS): EngineResult<T> =
+        EngineProtocol.read(json, privilege.execute(listOf(executable) + arguments, timeoutMillis), serializer)
 
     suspend fun version(): EngineResult<VersionReport> = run(listOf("version"), VersionReport.serializer())
 
@@ -171,7 +116,10 @@ class Engine(val context: Context) {
     }
 
     companion object {
-        const val EXECUTABLE = "libreplay.so"
+        const val EXECUTABLE = "libreplay-integrity.so"
+
+        /** The directory of the engine on the device (`Layout::store` of the engine). */
+        const val STORE = "/data/adb/replay-integrity"
         const val DIRECTORY = "engine"
         const val SETTINGS = "settings.json"
         const val TIMEOUT_MILLIS = 60_000L

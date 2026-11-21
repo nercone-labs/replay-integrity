@@ -16,7 +16,7 @@ use crate::{Layout, ReplayError, Store};
 /// application installed after the last refresh is then attested at once, not hours later.
 ///
 /// It runs the copy of the engine in the store (`Store::executable`) as
-/// `replay watch --package <application>`, started by the service script of the boot hook at
+/// `replay-integrity watch --package <application>`, started by the service script of the boot hook at
 /// every boot and by `hook install` when it is not running. One runs at a time: it holds an
 /// exclusive lock on `watch.lock` in the store, whose contents are its process ID. It ends when
 /// the application is uninstalled (removing the boot hook) and when the boot hook is removed.
@@ -76,12 +76,29 @@ impl PackageWatcher {
     }
 
     /// Whether `arguments` (of `/proc/<pid>/cmdline`) are those of a watcher of this store:
-    /// the store's copy of the engine running `watch`. A process ID read from the lock file may
-    /// have been reused by another process, which this tells apart.
+    /// the store's copy of the engine running `watch`, under its name or one an earlier version
+    /// gave it (a watcher started before an update still runs that copy). A process ID read from
+    /// the lock file may have been reused by another process, which this tells apart.
     pub fn is_watcher(&self, arguments: &[String]) -> bool {
-        let executable = Store::new(&self.layout).executable();
-        arguments.first().is_some_and(|first| std::path::Path::new(first) == executable)
+        let store = Store::new(&self.layout);
+        let mut executables = store.legacy_executables();
+        executables.push(store.executable());
+        arguments.first().is_some_and(|first| executables.iter().any(|executable| std::path::Path::new(first) == executable))
             && arguments.get(1).is_some_and(|second| second == PackageWatcher::COMMAND)
+    }
+
+    /// Whether the watcher `pid` runs another file than the copy of the engine in the store now:
+    /// a copy that was replaced since it started (by an update), or one of an earlier name. Its
+    /// `/proc/<pid>/exe` still leads to the file it was started from, even once that file was
+    /// replaced or removed. `false` when either cannot be read.
+    pub fn is_outdated(&self, pid: u32) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let running = std::fs::metadata(format!("/proc/{pid}/exe"));
+        let current = std::fs::metadata(Store::new(&self.layout).executable());
+        match (running, current) {
+            (Ok(running), Ok(current)) => (running.dev(), running.ino()) != (current.dev(), current.ino()),
+            _ => false,
+        }
     }
 
     /// The process ID of the running watcher, if one runs. The lock is not touched, so asking

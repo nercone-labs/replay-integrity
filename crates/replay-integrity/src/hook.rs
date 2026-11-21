@@ -139,8 +139,12 @@ impl BootHook {
             return Ok(BootHook::current(layout));
         }
         let replaced = Store::new(layout).install_executable(executable)?;
-        if replaced || !watch {
-            PackageWatcher::new(layout).stop()?;
+        // A watcher that runs an earlier copy is ended, also when the copy was replaced by an
+        // earlier attempt whose stop of the watcher failed.
+        let watcher = PackageWatcher::new(layout);
+        let outdated = watcher.running().is_some_and(|pid| watcher.is_outdated(pid));
+        if replaced || outdated || !watch {
+            watcher.stop()?;
         }
         for manager in &managers {
             let directory = manager.hook_directory(layout);
@@ -154,6 +158,8 @@ impl BootHook {
                 Files::remove(&services.join(BootHook::FILE_NAME))?;
             }
         }
+        // Every script now runs the copy of this version; the copies of earlier versions are no longer run.
+        Store::new(layout).remove_legacy_executables()?;
         Ok(BootHook::current(layout))
     }
 
@@ -164,7 +170,9 @@ impl BootHook {
             Files::remove(&path)?;
         }
         PackageWatcher::new(layout).stop()?;
-        Files::remove(&Store::new(layout).executable())?;
+        let store = Store::new(layout);
+        Files::remove(&store.executable())?;
+        store.remove_legacy_executables()?;
         Ok(BootHook::current(layout))
     }
 

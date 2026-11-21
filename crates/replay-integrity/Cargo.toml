@@ -1,12 +1,13 @@
 [package]
-name = "replay"
+name = "replay-integrity"
 description = "Replay Integrity engine: keeps the keybox, the fingerprint and the configuration of TEESimulator-RS and PlayIntegrityFork valid"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+repository.workspace = true
 
 [[bin]]
-name = "replay"
+name = "replay-integrity"
 path = "src/main.rs"
 
 [dependencies]

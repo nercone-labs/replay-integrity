@@ -4,6 +4,7 @@ description = "Android system interfaces: system properties, the font service, t
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+repository.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 rustix.workspace = true

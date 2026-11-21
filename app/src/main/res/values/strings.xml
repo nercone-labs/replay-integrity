@@ -296,6 +296,7 @@
     <string name="settings_store">The engine keeps its state, the applied settings, the installed fingerprint, the previous keybox and the copy of itself that the boot hook runs in %1$s.</string>
     <string name="settings_capabilities">Root capabilities</string>
     <string name="settings_capabilities_ok">All the capabilities the engine needs are present</string>
+    <string name="settings_source_title">Source code</string>
     <string name="settings_credits">Credits</string>
     <string name="settings_credits_short">TEESimulator-RS, Play Integrity Fork, AlwaysStrong</string>
     <string name="settings_credits_text">Replay Integrity drives TEESimulator-RS (Enginex0, JingMatrix) and Play Integrity Fork (osm0sis, chiteroman), and uses the keybox and fingerprint sources of AlwaysStrong (Evokerr). It works with Shizuku and Sui (RikkaApps).</string>

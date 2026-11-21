@@ -148,6 +148,18 @@ impl PersistedKey {
         let certificates: Vec<Certificate> = certificates.iter().map(|der| Certificate::parse(der).ok()).collect::<Option<_>>()?;
         Some(Chain::new(certificates).problems(now, status, anchors))
     }
+
+    /// Whether `problems` of the chain of a key's signer (`signer_problems`) make it unusable.
+    ///
+    /// A chain the key was attested with was valid when the key was made, so one of its
+    /// certificates that is not valid yet means that the clock is behind, as it is early in a
+    /// boot on many devices, before the time is set from the network. The validity periods then
+    /// tell nothing, and only the other problems (revocation, an untrusted root, a broken chain)
+    /// count: a key that still works must not be removed for a wrong clock.
+    pub fn is_unusable(problems: &[ChainProblem]) -> bool {
+        let clock_behind = problems.iter().any(|problem| matches!(problem, ChainProblem::NotYetValid { .. }));
+        problems.iter().any(|problem| !(clock_behind && matches!(problem, ChainProblem::NotYetValid { .. } | ChainProblem::Expired { .. })))
+    }
 }
 
 /// What a persisted key is for, which decides what its removal costs the user

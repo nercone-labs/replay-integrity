@@ -14,6 +14,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
@@ -40,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
@@ -47,12 +52,11 @@ import androidx.compose.ui.unit.dp
 import dev.nercone.replayintegrity.R
 import dev.nercone.replayintegrity.config.Protection
 import dev.nercone.replayintegrity.config.Settings
+import dev.nercone.replayintegrity.engine.Engine
 import dev.nercone.replayintegrity.engine.KeyRemoval
 import dev.nercone.replayintegrity.net.Downloader
 import dev.nercone.replayintegrity.net.KeyboxFormat
 import dev.nercone.replayintegrity.net.KeyboxSource
-import dev.nercone.replayintegrity.privilege.Privilege
-import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import dev.nercone.replayintegrity.ui.Notices.notices
 
 /**
@@ -60,26 +64,31 @@ import dev.nercone.replayintegrity.ui.Notices.notices
  * The frame shows a page in place of the list, with a way back (`ReplayApp`).
  */
 object SettingsScreen {
-    const val STORE = "/data/adb/replay-integrity"
+    /** Where the source of the application is published. */
+    const val SOURCE = "https://github.com/nercone-labs/replay-integrity"
 
     /** A page of the settings. */
     enum class Page(val title: Int) {
-        PRIVILEGE(R.string.settings_privilege),
         PROTECTION(R.string.settings_protection),
         REFRESH(R.string.settings_refresh),
         SOURCES(R.string.settings_sources),
         APPLYING(R.string.settings_applying),
         NOTIFICATIONS(R.string.settings_notifications),
+        PRIVILEGE(R.string.settings_privilege),
         ABOUT(R.string.settings_about),
     }
 
     @Composable
-    fun Content(state: UiState, settings: Settings.Values, model: AppViewModel, page: Page?, onOpen: (Page) -> Unit) {
+    fun Content(data: ScreenData, model: AppViewModel, page: Page?, onOpen: (Page) -> Unit) {
+        val state = data.state
+        val settings = data.settings
         Widgets.Screen {
-            notices(state, settings, model)
+            notices(data, model)
             when (page) {
                 null -> item(key = "pages") { Pages(state, settings, onOpen) }
-                Page.PRIVILEGE -> item(key = "privilege") { Privilege(state, settings, model) }
+                Page.PRIVILEGE -> item(key = "privilege") {
+                    Privileges.Choices(state.privilege, settings.privilege, enabled = state.operation == null, onSelect = model::setPrivilegeChoice)
+                }
                 Page.PROTECTION -> item(key = "protection") { Protection(settings, model) }
                 Page.REFRESH -> item(key = "refresh") { Refresh(settings, model) }
                 Page.SOURCES -> item(key = "sources") { Sources(settings, model) }
@@ -105,34 +114,13 @@ object SettingsScreen {
                 stringResource(if (settings.restartOnChange) R.string.settings_applying_at_once else R.string.settings_applying_at_reboot),
                 stringResource(if (settings.bootHook) R.string.settings_applying_boot_hook else R.string.settings_applying_no_boot_hook),
             ).joinToString(" · ")),
-            Triple(Page.PRIVILEGE, Icons.Default.Security, Labels.privilegeChoice(settings.privilege) + (state.privilege?.privilege?.let { " · " + Labels.privilege(it.kind) } ?: "")),
             Triple(Page.NOTIFICATIONS, Icons.Default.Notifications, stringResource(if (settings.notifyFailures) R.string.on else R.string.off)),
+            Triple(Page.PRIVILEGE, Icons.Default.Security, Privileges.summary(settings.privilege, state.privilege)),
             Triple(Page.ABOUT, Icons.Default.Info, stringResource(R.string.settings_about_short)),
         )
         Widgets.Group {
             pages.forEachIndexed { index, (page, icon, summary) ->
                 Widgets.Item(index, pages.size, stringResource(page.title), summary, icon, onClick = { onOpen(page) })
-            }
-        }
-    }
-
-    @Composable
-    fun Privilege(state: UiState, settings: Settings.Values, model: AppViewModel) {
-        Widgets.Section(null, stringResource(R.string.settings_privilege_help)) {
-            PrivilegeChoice.entries.forEachIndexed { index, choice ->
-                Widgets.RadioItem(
-                    index, PrivilegeChoice.entries.size,
-                    headline = Labels.privilegeChoice(choice),
-                    supporting = state.privilege?.statuses?.let { statuses ->
-                        when (choice) {
-                            PrivilegeChoice.AUTOMATIC -> state.privilege.privilege?.let { stringResource(R.string.privilege_runs_as_root, Labels.privilege(it.kind)) }
-                            else -> statuses.firstOrNull { (kind, _) -> (kind == Privilege.Kind.ROOT) == (choice == PrivilegeChoice.ROOT) }
-                                ?.let { (_, status) -> Labels.describe(status) }
-                        }
-                    },
-                    selected = settings.privilege == choice,
-                    enabled = state.operation == null,
-                ) { model.setPrivilegeChoice(choice) }
             }
         }
     }
@@ -414,14 +402,18 @@ object SettingsScreen {
     fun About(state: UiState) {
         val context = LocalContext.current
         val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty() }
+        val uri = LocalUriHandler.current
         var credits by rememberSaveable { mutableStateOf(false) }
-        Widgets.Section(null, stringResource(R.string.settings_uninstall)) {
-            Widgets.Item(0, 4, stringResource(R.string.app_name), stringResource(R.string.settings_version, version, state.status?.engineVersion ?: "?"))
-            Widgets.Item(1, 4, stringResource(R.string.settings_store_title), stringResource(R.string.settings_store, STORE))
-            Widgets.Item(2, 4, stringResource(R.string.settings_capabilities), state.status?.let { status ->
-                if (status.missingCapabilities.isEmpty()) stringResource(R.string.settings_capabilities_ok) else status.missingCapabilities.joinToString(", ")
-            } ?: stringResource(R.string.unknown))
-            Widgets.Item(3, 4, stringResource(R.string.settings_credits), stringResource(R.string.settings_credits_short), onClick = { credits = true })
+        Column(verticalArrangement = Arrangement.spacedBy(Widgets.SPACING)) {
+            Widgets.Identity(stringResource(R.string.settings_version, version, state.status?.engineVersion ?: "?"))
+            Widgets.Section(null, stringResource(R.string.settings_uninstall)) {
+                Widgets.Item(0, 4, stringResource(R.string.settings_store_title), stringResource(R.string.settings_store, Engine.STORE), Icons.Default.Folder)
+                Widgets.Item(1, 4, stringResource(R.string.settings_capabilities), state.status?.let { status ->
+                    if (status.missingCapabilities.isEmpty()) stringResource(R.string.settings_capabilities_ok) else status.missingCapabilities.joinToString(", ")
+                } ?: stringResource(R.string.unknown), Icons.Default.AdminPanelSettings)
+                Widgets.Item(2, 4, stringResource(R.string.settings_credits), stringResource(R.string.settings_credits_short), Icons.Default.People, onClick = { credits = true })
+                Widgets.Item(3, 4, stringResource(R.string.settings_source_title), SOURCE, Icons.Default.Code, onClick = { Widgets.open(uri, SOURCE) })
+            }
         }
         if (credits) {
             AlertDialog(

@@ -15,8 +15,14 @@ pub struct Node {
 }
 
 impl Node {
+    /// How deeply elements may nest. A keybox nests five levels deep; the tree is dropped,
+    /// compared and cloned recursively, so a document nested without bound (a hostile download)
+    /// would overflow the stack instead of failing.
+    pub const MAX_DEPTH: usize = 64;
+
     /// Parses a well-formed document and returns its root element. Document type
-    /// declarations are refused, so that no external entity can be referenced.
+    /// declarations are refused, so that no external entity can be referenced, and so are
+    /// elements nested deeper than `MAX_DEPTH`.
     pub fn parse(source: &str) -> Result<Node, KeyboxError> {
         let mut reader = Reader::from_str(source);
         let config = reader.config_mut();
@@ -29,6 +35,9 @@ impl Node {
             match event {
                 Event::Start(tag) | Event::Empty(tag) if root.is_some() && stack.is_empty() => {
                     return Err(KeyboxError::Syntax(format!("a second root element <{}>", tag.name().as_ref())));
+                }
+                Event::Start(_) if stack.len() >= Node::MAX_DEPTH => {
+                    return Err(KeyboxError::Syntax(format!("elements nested deeper than {} levels", Node::MAX_DEPTH)));
                 }
                 Event::Start(tag) => stack.push(Node::open(&tag)?),
                 Event::Empty(tag) => Node::attach(Node::open(&tag)?, &mut stack, &mut root),
