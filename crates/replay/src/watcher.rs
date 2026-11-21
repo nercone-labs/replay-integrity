@@ -1,7 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -126,7 +125,7 @@ impl PackageWatcher {
     }
 
     /// Starts a watcher for `package` with the store's copy of the engine, unless one runs.
-    /// It runs in a process group of its own, so that it outlives the command that started it.
+    /// It makes a session of its own (`detach`), so that it outlives the command that started it.
     /// Returns whether one was started.
     pub fn start(&self, package: &str) -> Result<bool, ReplayError> {
         if self.running().is_some() {
@@ -136,7 +135,8 @@ impl PackageWatcher {
         Command::new(&executable)
             .args(self.arguments(package))
             .current_dir("/")
-            .process_group(0)
+            // No process group of its own here: `detach` makes a session, which `setsid` refuses
+            // to a process-group leader (EPERM), and a session gives it a group of its own anyway.
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

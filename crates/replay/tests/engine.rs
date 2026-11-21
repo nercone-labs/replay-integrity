@@ -219,6 +219,25 @@ fn apply_writes_a_malformed_installed_keybox_again() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A keybox from which no key can be read is no reason to stop an `apply` (or the boot hook)
+/// half-way: the rest of the configuration is applied and recorded, the file is kept as it is,
+/// and no persisted key is judged outdated against it.
+#[test]
+fn apply_completes_with_an_unreadable_installed_keybox() {
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let keybox_path = layout.tricky_store().join("keybox.xml");
+    let unreadable = "<AndroidAttestation><Keybox>truncated";
+    fs::write(&keybox_path, unreadable).unwrap();
+    let mut engine = Engine::new(layout.clone());
+    let report = engine.apply(&Settings::default(), ApplyMode::EarlyBoot, None).unwrap();
+    assert!(!report.keybox_repaired);
+    assert_eq!(report.stale_keys_removed, 0);
+    assert_eq!(fs::read_to_string(&keybox_path).unwrap(), unreadable);
+    assert!(engine.status(None).unwrap().applied_at.is_some());
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn a_keybox_without_a_key_is_rejected_and_the_installed_one_kept() {
     let root = temporary_root();
@@ -570,6 +589,8 @@ fn the_service_script_starts_the_package_watcher() {
     let _ = fs::remove_dir_all(&root);
 }
 
+// `flock` locks are taken on Linux and Android only (`Files::lock`).
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[test]
 fn one_package_watcher_holds_the_lock_at_a_time() {
     let root = temporary_root();
@@ -651,6 +672,8 @@ fn the_apply_lock_is_released_when_its_holder_closes_it() {
     let _ = fs::remove_dir_all(&root);
 }
 
+// `flock` locks are taken on Linux and Android only (`Files::lock`).
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[test]
 fn stopping_a_watcher_waits_until_it_has_ended() {
     let root = temporary_root();
