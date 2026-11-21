@@ -1,4 +1,4 @@
-<img width="1920" src="https://raw.githubusercontent.com/nercone-dev/assets/refs/heads/main/images/projects/labs/replay-integrity/header.png" />
+<img width="1920" src="https://raw.githubusercontent.com/nercone-dev/website/refs/heads/main/public/static/assets/images/projects/labs/replay-integrity/header.png" />
 
 # Replay Integrity
 
