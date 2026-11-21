@@ -245,7 +245,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         it.copy(excludedPackages = if (excluded) (it.excludedPackages + packageName).distinct() else it.excludedPackages - packageName)
     }
 
-    fun resetSources() = configure { it.copy(keyboxUrl = Downloader.DEFAULT_KEYBOX_URL, extraKeyboxUrls = emptyList(), fingerprintUrl = Downloader.DEFAULT_FINGERPRINT_URL) }
+    fun resetSources() = configure { it.copy(keyboxSources = Downloader.DEFAULT_KEYBOX_SOURCES, fingerprintUrl = Downloader.DEFAULT_FINGERPRINT_URL) }
 
     fun dismissOutcome() = state.update { it.copy(outcome = null) }
 

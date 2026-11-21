@@ -46,6 +46,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.nercone.replayintegrity.R
+import dev.nercone.replayintegrity.net.KeyboxFormat
+import dev.nercone.replayintegrity.net.KeyboxSource
 
 /** User interface parts shared by the screens. */
 object Widgets {
@@ -249,6 +251,80 @@ object Widgets {
                     onChange(items + text)
                     text = ""
                 }) { Icon(Icons.Default.Add, stringResource(R.string.add)) }
+            }
+        }
+    }
+
+    /**
+     * An editable list of keybox sources. Each source shows its URL and a lenient switch, both
+     * editable in place, with a button to remove it; a row at the end adds one. A URL change is
+     * committed with its check button, the lenient switch at once. `validate` is the URL check,
+     * and a URL already in the list is refused.
+     */
+    @Composable
+    fun KeyboxSourceList(
+        items: List<KeyboxSource>,
+        urlLabel: String,
+        lenientLabel: String,
+        formatLabel: String,
+        describeFormat: @Composable (KeyboxFormat) -> String,
+        validate: (String) -> Boolean,
+        onChange: (List<KeyboxSource>) -> Unit,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            items.forEachIndexed { index, source ->
+                fun replace(transform: (KeyboxSource) -> KeyboxSource) = onChange(items.mapIndexed { i, s -> if (i == index) transform(s) else s })
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    var url by remember(source.url) { mutableStateOf(source.url) }
+                    val unique = items.none { it.url == url } || url == source.url
+                    val valid = validate(url) && unique
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            url,
+                            { url = it.trim() },
+                            label = { Text(urlLabel) },
+                            singleLine = true,
+                            isError = !valid,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(enabled = valid && url != source.url, onClick = { replace { it.copy(url = url) } }) { Icon(Icons.Default.Check, stringResource(R.string.save)) }
+                        IconButton(onClick = { onChange(items.filterIndexed { i, _ -> i != index }) }) { Icon(Icons.Default.Close, stringResource(R.string.remove)) }
+                    }
+                    Text(formatLabel, style = MaterialTheme.typography.bodySmall, color = secondary)
+                    Segments(KeyboxFormat.entries, source.format, describeFormat, { format -> replace { it.copy(format = format) } })
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(lenientLabel, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = secondary)
+                        Switch(source.lenient, { checked -> replace { it.copy(lenient = checked) } })
+                    }
+                }
+            }
+            var newUrl by remember { mutableStateOf("") }
+            var newLenient by remember { mutableStateOf(false) }
+            var newFormat by remember { mutableStateOf(KeyboxFormat.AUTO) }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        newUrl,
+                        { newUrl = it.trim() },
+                        label = { Text(urlLabel) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(enabled = validate(newUrl) && items.none { it.url == newUrl }, onClick = {
+                        onChange(items + KeyboxSource(newUrl, newLenient, newFormat))
+                        newUrl = ""
+                        newLenient = false
+                        newFormat = KeyboxFormat.AUTO
+                    }) { Icon(Icons.Default.Add, stringResource(R.string.add)) }
+                }
+                Text(formatLabel, style = MaterialTheme.typography.bodySmall, color = secondary)
+                Segments(KeyboxFormat.entries, newFormat, describeFormat, { newFormat = it })
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(lenientLabel, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = secondary)
+                    Switch(newLenient, { newLenient = it })
+                }
             }
         }
     }

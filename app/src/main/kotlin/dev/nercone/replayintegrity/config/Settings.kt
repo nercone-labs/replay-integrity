@@ -9,10 +9,15 @@ import dev.nercone.replayintegrity.engine.KeyboxPolicy
 import dev.nercone.replayintegrity.engine.TargetMode
 import dev.nercone.replayintegrity.engine.TargetScope
 import dev.nercone.replayintegrity.net.Downloader
+import dev.nercone.replayintegrity.net.KeyboxSource
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 
 /**
@@ -45,13 +50,14 @@ class Settings(context: Context) {
         val keyboxExpiryMarginHours: Int = DEFAULT_EXPIRY_MARGIN_HOURS,
         /** Whether the fingerprint is downloaded and replaced on every refresh. */
         val autoFingerprint: Boolean = true,
-        /** Where the keybox is downloaded from (the keybox XML, or base64 of it). */
-        val keyboxUrl: String = Downloader.DEFAULT_KEYBOX_URL,
         /**
-         * More keybox sources, tried in order after `keyboxUrl` when it cannot be downloaded or
-         * serves a keybox that ranks below the installed one.
+         * The keybox sources, tried in order until one installs or is kept. Each carries its own
+         * settings (`KeyboxSource`): the URL and whether its keybox is read leniently. A fresh
+         * install starts with the default mirror (`Downloader.DEFAULT_KEYBOX_SOURCES`); the user
+         * can edit it, remove it, or add others. A source serves the keybox as XML, base64, gzip
+         * or a zip of one file, told apart on its own.
          */
-        val extraKeyboxUrls: List<String> = emptyList(),
+        val keyboxSources: List<KeyboxSource> = Downloader.DEFAULT_KEYBOX_SOURCES,
         /** Where the fingerprint is downloaded from (a `custom.pif.prop`). */
         val fingerprintUrl: String = Downloader.DEFAULT_FINGERPRINT_URL,
         /** Hours between scheduled refreshes; 0 turns them off. */
@@ -99,8 +105,8 @@ class Settings(context: Context) {
         /** The problems of the last refresh; empty when it succeeded. */
         val lastRefreshProblems: List<String> = emptyList(),
     ) {
-        /** The keybox sources in the order they are tried: `keyboxUrl`, then `extraKeyboxUrls`. */
-        fun keyboxSources(): List<String> = (listOf(keyboxUrl) + extraKeyboxUrls).distinct()
+        /** The keybox sources in the order they are tried, without a URL repeated. */
+        fun orderedKeyboxSources(): List<KeyboxSource> = keyboxSources.distinctBy { it.url }
 
         /** When the engine installs a keybox that a refresh downloaded. */
         fun keyboxPolicy(): KeyboxPolicy = when (keyboxReplacement) {
@@ -173,9 +179,27 @@ class Settings(context: Context) {
          * stack keeps it, as the engine's `Settings::parse` does.
          */
         fun decode(text: String): Values {
-            val values = JSON.decodeFromString(Values.serializer(), text)
+            var values = JSON.decodeFromString(Values.serializer(), text)
             val stored = JSON.parseToJsonElement(text).jsonObject
-            return if ("playTargetMode" !in stored && values.targetMode != TargetMode.AUTO) values.copy(playTargetMode = values.targetMode) else values
+            if ("playTargetMode" !in stored && values.targetMode != TargetMode.AUTO) values = values.copy(playTargetMode = values.targetMode)
+            if ("keyboxSources" !in stored) values = values.copy(keyboxSources = keyboxSourcesOf(stored))
+            return values
+        }
+
+        /**
+         * The keybox sources of a document written before they were one list of settings, when a
+         * single `keyboxUrl` and a list of `extraKeyboxUrls` held only the URLs. Each becomes a
+         * source read strictly, except the default mirror, which kept its leniency implicitly and
+         * keeps it here, so an update changes no behavior. A document with neither field, written
+         * before any keybox source existed, falls back to the default seed.
+         */
+        private fun keyboxSourcesOf(stored: JsonObject): List<KeyboxSource> {
+            val urls = buildList {
+                (stored["keyboxUrl"] as? JsonPrimitive)?.contentOrNull?.let { add(it) }
+                (stored["extraKeyboxUrls"] as? JsonArray)?.forEach { (it as? JsonPrimitive)?.contentOrNull?.let(::add) }
+            }
+            if (urls.isEmpty()) return Downloader.DEFAULT_KEYBOX_SOURCES
+            return urls.distinct().map { KeyboxSource(it, lenient = it == Downloader.DEFAULT_KEYBOX_URL) }
         }
     }
 }

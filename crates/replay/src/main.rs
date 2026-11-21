@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 /// A subcommand of the command line.
 enum Command {
     Status,
-    InspectKeybox { file: PathBuf },
+    InspectKeybox { file: PathBuf, lenient: bool },
     InspectFingerprint { file: PathBuf },
-    InstallKeybox { file: PathBuf, source: Option<String>, policy: KeyboxPolicy },
+    InstallKeybox { file: PathBuf, source: Option<String>, policy: KeyboxPolicy, lenient: bool },
     InstallFingerprint { file: PathBuf, source: Option<String> },
     Targets,
     Apply { mode: ApplyMode },
@@ -58,9 +58,9 @@ impl CommandLine {
     const DEFAULT_EXPIRY_MARGIN_HOURS: i64 = 48;
 
     const USAGE: &'static str = "usage: replay status [--status STATUS.json]
-       replay inspect-keybox <keybox.xml> [--status STATUS.json]
+       replay inspect-keybox <keybox.xml> [--status STATUS.json] [--lenient]
        replay inspect-fingerprint <fingerprint.prop|fingerprint.json>
-       replay install-keybox <keybox.xml> [--source TEXT] [--status STATUS.json]
+       replay install-keybox <keybox.xml> [--source TEXT] [--status STATUS.json] [--lenient]
                              [--policy replace|no-downgrade|when-needed] [--expiry-margin HOURS]
        replay install-fingerprint <fingerprint.prop|fingerprint.json> [--source TEXT] [--settings SETTINGS.json]
        replay targets [--settings SETTINGS.json]
@@ -86,6 +86,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
         let mut package: Option<String> = None;
         let mut no_restart = false;
         let mut no_watch = false;
+        let mut lenient = false;
         let mut policy: Option<String> = None;
         let mut expiry_margin = CommandLine::DEFAULT_EXPIRY_MARGIN_HOURS;
         let mut uid: Option<u32> = None;
@@ -99,6 +100,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
                 Long("package") => package = Some(parser.value()?.string()?),
                 Long("no-restart") => no_restart = true,
                 Long("no-watch") => no_watch = true,
+                Long("lenient") => lenient = true,
                 Long("policy") => policy = Some(parser.value()?.string()?),
                 Long("expiry-margin") => expiry_margin = parser.value()?.parse()?,
                 Long("uid") => uid = Some(parser.value()?.parse()?),
@@ -112,7 +114,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
         let required = |package: Option<String>, command: &str| package.ok_or_else(|| lexopt::Error::from(format!("{command} needs --package")));
         let command = match name.as_deref() {
             Some("status") => Command::Status,
-            Some("inspect-keybox") => Command::InspectKeybox { file: first(&positional)?.into() },
+            Some("inspect-keybox") => Command::InspectKeybox { file: first(&positional)?.into(), lenient },
             Some("inspect-fingerprint") => Command::InspectFingerprint { file: first(&positional)?.into() },
             Some("install-keybox") => {
                 if !(0..=i64::MAX / 3600).contains(&expiry_margin) {
@@ -124,7 +126,7 @@ options: --root DIR   the base directory, an absolute path (default /)";
                     Some("when-needed") => KeyboxPolicy::WhenNeeded { margin_seconds: expiry_margin * 3600 },
                     Some(other) => return Err(lexopt::Error::from(format!("unknown keybox policy {other}"))),
                 };
-                Command::InstallKeybox { file: first(&positional)?.into(), source, policy }
+                Command::InstallKeybox { file: first(&positional)?.into(), source, policy, lenient }
             }
             Some("install-fingerprint") => Command::InstallFingerprint { file: first(&positional)?.into(), source },
             Some("targets") => Command::Targets,
@@ -210,11 +212,11 @@ options: --root DIR   the base directory, an absolute path (default /)";
         let status = status.as_deref();
         match &self.command {
             Command::Status => CommandLine::json(&engine.status(status)?),
-            Command::InspectKeybox { file } => CommandLine::json(&engine.inspect_keybox(&CommandLine::read(file)?, status)?),
+            Command::InspectKeybox { file, lenient } => CommandLine::json(&engine.inspect_keybox(&CommandLine::read(file)?, status, *lenient)?),
             Command::InspectFingerprint { file } => CommandLine::json(&engine.inspect_fingerprint(&CommandLine::read(file)?)?),
-            Command::InstallKeybox { file, source, policy } => {
+            Command::InstallKeybox { file, source, policy, lenient } => {
                 Engine::require_root()?;
-                CommandLine::json(&engine.install_keybox(&CommandLine::read(file)?, source.clone(), status, *policy)?)
+                CommandLine::json(&engine.install_keybox(&CommandLine::read(file)?, source.clone(), status, *policy, *lenient)?)
             }
             Command::InstallFingerprint { file, source } => {
                 Engine::require_root()?;

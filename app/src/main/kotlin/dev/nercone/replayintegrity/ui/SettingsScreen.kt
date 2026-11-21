@@ -160,27 +160,27 @@ object SettingsScreen {
 
             Widgets.Header(stringResource(R.string.settings_sources))
             Widgets.Group {
-                Widgets.Panel(0, 4) {
-                    Widgets.TextSetting(settings.keyboxUrl, stringResource(R.string.settings_keybox_url), Downloader::isAcceptable, { url -> model.configure { it.copy(keyboxUrl = url) } })
-                }
-                Widgets.Panel(1, 4) {
-                    Text(stringResource(R.string.settings_extra_keybox_urls), style = MaterialTheme.typography.labelLarge)
-                    Widgets.StringList(
-                        items = settings.extraKeyboxUrls,
-                        label = stringResource(R.string.settings_keybox_url),
-                        validate = { Downloader.isAcceptable(it) && it != settings.keyboxUrl },
-                        onChange = { list -> model.configure { it.copy(extraKeyboxUrls = list) } },
+                Widgets.Panel(0, 3) {
+                    Text(stringResource(R.string.settings_keybox_sources), style = MaterialTheme.typography.labelLarge)
+                    Widgets.KeyboxSourceList(
+                        items = settings.keyboxSources,
+                        urlLabel = stringResource(R.string.settings_keybox_url),
+                        lenientLabel = stringResource(R.string.settings_keybox_lenient),
+                        formatLabel = stringResource(R.string.settings_keybox_format),
+                        describeFormat = { Labels.keyboxFormat(it) },
+                        validate = Downloader::isAcceptable,
+                        onChange = { list -> model.configure { it.copy(keyboxSources = list) } },
                     )
-                    Text(stringResource(R.string.settings_extra_keybox_urls_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary)
+                    Text(stringResource(R.string.settings_keybox_sources_help), style = MaterialTheme.typography.bodySmall, color = Widgets.secondary)
                 }
-                Widgets.Panel(2, 4) {
+                Widgets.Panel(1, 3) {
                     Widgets.TextSetting(settings.fingerprintUrl, stringResource(R.string.settings_fingerprint_url), Downloader::isAcceptable, { url -> model.configure { it.copy(fingerprintUrl = url) } })
                 }
                 Widgets.Item(
-                    3, 4,
+                    2, 3,
                     headline = stringResource(R.string.settings_sources_reset),
                     supporting = stringResource(R.string.settings_sources_reset_help),
-                    enabled = settings.keyboxUrl != Downloader.DEFAULT_KEYBOX_URL || settings.extraKeyboxUrls.isNotEmpty() || settings.fingerprintUrl != Downloader.DEFAULT_FINGERPRINT_URL,
+                    enabled = settings.keyboxSources != Downloader.DEFAULT_KEYBOX_SOURCES || settings.fingerprintUrl != Downloader.DEFAULT_FINGERPRINT_URL,
                     onClick = model::resetSources,
                 )
             }

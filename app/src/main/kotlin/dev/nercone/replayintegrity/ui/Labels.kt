@@ -10,6 +10,7 @@ import dev.nercone.replayintegrity.engine.Component
 import dev.nercone.replayintegrity.engine.KeyCategory
 import dev.nercone.replayintegrity.engine.KeyRemoval
 import dev.nercone.replayintegrity.engine.Problem
+import dev.nercone.replayintegrity.net.KeyboxFormat
 import dev.nercone.replayintegrity.engine.RootManager
 import dev.nercone.replayintegrity.engine.TargetMode
 import dev.nercone.replayintegrity.engine.TargetScope
@@ -108,6 +109,17 @@ object Labels {
         when (replacement) {
             Settings.KeyboxReplacement.WHEN_NEEDED -> R.string.keybox_replacement_when_needed
             Settings.KeyboxReplacement.NO_DOWNGRADE -> R.string.keybox_replacement_no_downgrade
+        },
+    )
+
+    @Composable
+    fun keyboxFormat(format: KeyboxFormat): String = stringResource(
+        when (format) {
+            KeyboxFormat.AUTO -> R.string.keybox_format_auto
+            KeyboxFormat.XML -> R.string.keybox_format_xml
+            KeyboxFormat.BASE64 -> R.string.keybox_format_base64
+            KeyboxFormat.GZIP -> R.string.keybox_format_gzip
+            KeyboxFormat.ZIP -> R.string.keybox_format_zip
         },
     )
 
