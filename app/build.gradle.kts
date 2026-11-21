@@ -48,8 +48,8 @@ android {
         applicationId = "dev.nercone.replayintegrity"
         minSdk = 33
         targetSdk = 37
-        versionCode = 10003
-        versionName = "1.0.3"
+        versionCode = 10100
+        versionName = "1.1.0"
     }
 
     buildTypes {
