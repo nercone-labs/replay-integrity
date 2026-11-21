@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use replay::PersistedKey;
+use replay_integrity::PersistedKey;
 
 /// Builds a persisted-key file of format version 3 with the given alias and certificate chain.
 fn persisted_key(uid: u32, alias: &str, chain: &[&[u8]]) -> Vec<u8> {
@@ -78,4 +78,20 @@ fn an_alias_in_modified_utf8_that_is_not_utf8_is_not_exact() {
         let key = PersistedKey::parse(std::path::Path::new("x.bin"), &bytes).unwrap();
         assert!(!key.alias_exact, "{alias:?}");
     }
+}
+
+#[test]
+fn a_chain_is_unusable_for_its_problems_unless_the_clock_is_behind() {
+    use attestation::{CertificateStatus, ChainProblem};
+    assert!(!PersistedKey::is_unusable(&[]));
+    assert!(PersistedKey::is_unusable(&[ChainProblem::Expired { index: 1, not_after: 0 }]));
+    let revoked = ChainProblem::Revoked { index: 1, serial: "1".into(), status: CertificateStatus::Revoked, reason: None };
+    assert!(PersistedKey::is_unusable(std::slice::from_ref(&revoked)));
+    // A certificate of the chain that is not valid yet means the clock is behind: validity
+    // periods then tell nothing, and only the other problems count.
+    let early = ChainProblem::NotYetValid { index: 0, not_before: 1 };
+    assert!(!PersistedKey::is_unusable(std::slice::from_ref(&early)));
+    assert!(!PersistedKey::is_unusable(&[early.clone(), ChainProblem::Expired { index: 1, not_after: 0 }]));
+    assert!(PersistedKey::is_unusable(&[early.clone(), revoked]));
+    assert!(PersistedKey::is_unusable(&[early, ChainProblem::UntrustedRoot { subject: String::new() }]));
 }

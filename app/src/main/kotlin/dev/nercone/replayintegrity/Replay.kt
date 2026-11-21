@@ -31,9 +31,13 @@ import dev.nercone.replayintegrity.privilege.ShizukuPrivilege
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 /**
  * The application: the engine, the settings, the privileges and the downloader, with the
@@ -99,7 +103,11 @@ class Replay(val context: Context) {
         val age = withContext(Dispatchers.IO) { if (file.isFile) System.currentTimeMillis() - file.lastModified() else Long.MAX_VALUE }
         if (age in 0 until STATUS_LIST_MAX_AGE_MILLIS) return@withLock file
         try {
-            engine.write(STATUS_LIST, downloader.statusList().bytes)
+            // A response that is not a status list (an error page served with success) must not
+            // replace a good copy, which is used for an hour.
+            val bytes = downloader.statusList().bytes
+            if (!isStatusList(bytes)) throw IOException("the downloaded certificate status list is not one")
+            engine.write(STATUS_LIST, bytes)
         } catch (_: IOException) {
             file.takeIf { age in 0 until STATUS_LIST_STALE_MILLIS }
         }
@@ -189,11 +197,15 @@ class Replay(val context: Context) {
         for (source in sources) {
             val report = attempt(source.url, failures) {
                 val fetched = downloader.keybox(source.url, source.format)
+                val file = engine.write(KEYBOX, fetched.bytes)
                 val result = try {
-                    engine.installKeybox(privilege, engine.write(KEYBOX, fetched.bytes), fetched.source, status, policy, source.lenient)
+                    engine.installKeybox(privilege, file, fetched.source, status, policy, source.lenient)
                 } catch (error: EngineException) {
                     log += error.log
                     throw error
+                } finally {
+                    // It holds private keys, which are kept only where the keystore reads them.
+                    discard(file)
                 }
                 log += result.log
                 result.value
@@ -281,14 +293,15 @@ class Replay(val context: Context) {
 
     /** Checks a keybox the user chose, without installing it. */
     suspend fun inspectKeybox(uri: Uri, name: String): Candidate.Keybox {
-        val file = copy(uri, IMPORTED_KEYBOX, MAX_IMPORT_BYTES)
-        return Candidate.Keybox(file, name, engine.inspectKeybox(file, statusList(), lenient = false).value)
+        // A name of its own, so that discarding a dismissed candidate never deletes the next one.
+        val file = copy(uri, "${System.nanoTime()}-$IMPORTED_KEYBOX", MAX_IMPORT_BYTES)
+        return discardingOnFailure(file) { Candidate.Keybox(file, name, engine.inspectKeybox(file, statusList(), lenient = false).value) }
     }
 
     /** Checks a fingerprint the user chose, without installing it. */
     suspend fun inspectFingerprint(uri: Uri, name: String): Candidate.Fingerprint {
-        val file = copy(uri, IMPORTED_FINGERPRINT, MAX_IMPORT_BYTES)
-        return Candidate.Fingerprint(file, name, engine.inspectFingerprint(file).value)
+        val file = copy(uri, "${System.nanoTime()}-$IMPORTED_FINGERPRINT", MAX_IMPORT_BYTES)
+        return discardingOnFailure(file) { Candidate.Fingerprint(file, name, engine.inspectFingerprint(file).value) }
     }
 
     /**
@@ -296,6 +309,41 @@ class Replay(val context: Context) {
      * replaced by the next refresh, so its automatic refresh is turned off.
      */
     suspend fun install(candidate: Candidate): Repaired = operations.withLock {
+        try {
+            installChecked(candidate)
+        } finally {
+            discard(candidate.file)
+        }
+    }
+
+    /**
+     * Deletes a file handed to the engine once it is no longer needed: a keybox holds private
+     * keys, which are kept only where the keystore reads them (and in the store, as the previous
+     * keybox).
+     */
+    suspend fun discard(file: File) {
+        withContext(NonCancellable + Dispatchers.IO) { file.delete() }
+    }
+
+    /** Runs `block`, and discards `file` when it fails: no candidate then holds it. */
+    private suspend fun <T> discardingOnFailure(file: File, block: suspend () -> T): T = try {
+        block()
+    } catch (error: Throwable) {
+        discard(file)
+        throw error
+    }
+
+    /**
+     * Discards the files the user chose that a candidate held when the process ended: no
+     * candidate outlives the process, so none of them is needed. Called once, before any file is
+     * chosen.
+     */
+    suspend fun discardImports() = withContext(Dispatchers.IO) {
+        engine.directory().listFiles { file -> file.name.endsWith("-$IMPORTED_KEYBOX") || file.name.endsWith("-$IMPORTED_FINGERPRINT") }?.forEach { it.delete() }
+        Unit
+    }
+
+    private suspend fun installChecked(candidate: Candidate): Repaired {
         val privilege = privilege()
         val source = "file:${candidate.name}"
         val values = settings.values.value
@@ -311,7 +359,7 @@ class Replay(val context: Context) {
             }
         }
         val applied = engine.apply(privilege, values.engine(), values.restartOnChange && installed.value.changed, status)
-        Repaired(applied.value, applied.value.daemonRestarted, installed.log + applied.log)
+        return Repaired(applied.value, applied.value.daemonRestarted, installed.log + applied.log)
     }
 
     /** Installs a module zip with the root manager; it takes effect at the next boot. */
@@ -321,7 +369,7 @@ class Replay(val context: Context) {
             val result = engine.installModule(privilege(), component, zip)
             EngineResult(result.value.output, result.log)
         } finally {
-            withContext(Dispatchers.IO) { zip.delete() }
+            discard(zip)
         }
     }
 
@@ -345,5 +393,12 @@ class Replay(val context: Context) {
         const val MAX_MODULE_BYTES = 64 * 1024 * 1024
         const val STATUS_LIST_MAX_AGE_MILLIS = 60 * 60 * 1000L
         const val STATUS_LIST_STALE_MILLIS = 7 * 24 * 60 * 60 * 1000L
+
+        /** Whether `bytes` have the shape of the certificate status list: a JSON object with an object of `entries`. */
+        fun isStatusList(bytes: ByteArray): Boolean = try {
+            (Json.parseToJsonElement(bytes.decodeToString()) as? JsonObject)?.get("entries") is JsonObject
+        } catch (_: SerializationException) {
+            false
+        }
     }
 }

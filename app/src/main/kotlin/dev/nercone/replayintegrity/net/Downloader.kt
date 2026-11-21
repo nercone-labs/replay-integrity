@@ -9,6 +9,9 @@ import java.util.Base64
 import java.util.zip.GZIPInputStream
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
@@ -77,11 +80,18 @@ class Downloader {
      */
     suspend fun statusList(): Fetched = Fetched(fetch(uncachedURL(STATUS_LIST_URL, System.currentTimeMillis())), STATUS_LIST_URL)
 
-    /** Downloads a URL into memory, following redirects, with bounded timeouts. */
+    /**
+     * Downloads a URL into memory, following up to `MAX_REDIRECTS` redirects, all within
+     * `TOTAL_TIMEOUT_MILLIS`. A read blocked on a socket answers neither to the timeout of the
+     * coroutine nor to its cancellation, and a server that sends a byte now and then never
+     * reaches the timeout of a single read; so a watchdog closes the connection when the time is
+     * up or the caller is cancelled, which ends the read with an error.
+     */
     suspend fun fetch(url: String): ByteArray = withContext(Dispatchers.IO) {
         if (!isAcceptable(url)) throw IOException("$url is not an HTTPS URL")
+        val deadline = System.nanoTime() + TOTAL_TIMEOUT_MILLIS * 1_000_000
         var current = url
-        for (redirect in 0 until MAX_REDIRECTS) {
+        repeat(MAX_REDIRECTS + 1) {
             val connection = (URL(current).openConnection() as HttpURLConnection).apply {
                 connectTimeout = CONNECT_TIMEOUT_MILLIS
                 readTimeout = READ_TIMEOUT_MILLIS
@@ -89,30 +99,58 @@ class Downloader {
                 setRequestProperty("User-Agent", USER_AGENT)
                 setRequestProperty("Accept", "*/*")
             }
-            try {
-                val code = connection.responseCode
-                if (code in 300..399) {
-                    val location = connection.getHeaderField("Location") ?: throw IOException("a redirect without a location from $current")
-                    val next = URL(URL(current), location)
-                    // Never follow a redirect that drops from HTTPS to HTTP: a network attacker
-                    // could otherwise strip the transport security of these fetches.
-                    if (next.protocol != "https") {
-                        throw IOException("$current redirected to a non-HTTPS URL")
+            val response = coroutineScope {
+                val watchdog = launch {
+                    try {
+                        delay((deadline - System.nanoTime()) / 1_000_000)
+                    } finally {
+                        connection.disconnect()
                     }
-                    current = next.toString()
-                    continue
                 }
-                if (code != HttpURLConnection.HTTP_OK) {
-                    throw IOException("$current returned HTTP $code")
+                try {
+                    request(connection, current)
+                } catch (error: IOException) {
+                    if (System.nanoTime() - deadline >= 0) throw IOException("$url did not finish within ${TOTAL_TIMEOUT_MILLIS / 1000} seconds", error)
+                    throw error
+                } finally {
+                    watchdog.cancel()
+                    connection.disconnect()
                 }
-                val bytes = connection.inputStream.use { it.readLimited(MAX_BYTES) }
-                if (bytes.isEmpty()) throw IOException("$current returned no data")
-                return@withContext bytes
-            } finally {
-                connection.disconnect()
+            }
+            when (response) {
+                is Response.Body -> return@withContext response.bytes
+                is Response.Redirect -> current = response.location
             }
         }
         throw IOException("too many redirects from $url")
+    }
+
+    /** What one request answered: a body, or a redirect to follow. */
+    sealed interface Response {
+        class Body(val bytes: ByteArray) : Response
+
+        class Redirect(val location: String) : Response
+    }
+
+    /** Sends the request of `connection` to `current` and reads its answer. */
+    private fun request(connection: HttpURLConnection, current: String): Response {
+        val code = connection.responseCode
+        if (code in 300..399) {
+            val location = connection.getHeaderField("Location") ?: throw IOException("a redirect without a location from $current")
+            val next = URL(URL(current), location)
+            // Never follow a redirect that drops from HTTPS to HTTP: a network attacker
+            // could otherwise strip the transport security of these fetches.
+            if (next.protocol != "https") {
+                throw IOException("$current redirected to a non-HTTPS URL")
+            }
+            return Response.Redirect(next.toString())
+        }
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw IOException("$current returned HTTP $code")
+        }
+        val bytes = connection.inputStream.use { it.readLimited(MAX_BYTES) }
+        if (bytes.isEmpty()) throw IOException("$current returned no data")
+        return Response.Body(bytes)
     }
 
     companion object {
@@ -247,7 +285,11 @@ class Downloader {
 
         const val CONNECT_TIMEOUT_MILLIS = 20_000
         const val READ_TIMEOUT_MILLIS = 30_000
+        /** How many redirects a download follows. */
         const val MAX_REDIRECTS = 5
+
+        /** How long a download may take at most, redirects included. */
+        const val TOTAL_TIMEOUT_MILLIS = 120_000L
         /** A cap on a response body: the keybox and status list are well under a megabyte. */
         const val MAX_BYTES = 16 * 1024 * 1024
         const val USER_AGENT = "ReplayIntegrity"

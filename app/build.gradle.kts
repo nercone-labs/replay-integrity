@@ -7,8 +7,8 @@ plugins {
 }
 
 /**
- * Builds the Rust engine (the `replay` executable) for one Android ABI with Cargo, linking
- * with the LLVM toolchain of the NDK. The executable is packaged as `libreplay.so` so that
+ * Builds the Rust engine (the `replay-integrity` executable) for one Android ABI with Cargo, linking
+ * with the LLVM toolchain of the NDK. The executable is packaged as `libreplay-integrity.so` so that
  * the package installer extracts it into the native library directory, the one place from
  * which an application may execute its own files.
  */
@@ -30,12 +30,14 @@ abstract class CargoBuild : DefaultTask() {
         execOperations.exec {
             workingDir = workspace.get().asFile
             environment(variable, linker.get())
-            commandLine(cargo.get(), "build", "--release", "--locked", "-p", "replay", "--target", triple)
+            commandLine(cargo.get(), "build", "--release", "--locked", "-p", "replay-integrity", "--target", triple)
         }
-        val executable = workspace.get().file("target/$triple/release/replay").asFile
+        val executable = workspace.get().file("target/$triple/release/replay-integrity").asFile
+        // Emptied first, so that an engine of another name (an earlier one) is never packaged too.
         val directory = outputDirectory.get().dir(abi.get()).asFile
+        directory.deleteRecursively()
         directory.mkdirs()
-        executable.copyTo(directory.resolve("libreplay.so"), overwrite = true)
+        executable.copyTo(directory.resolve("libreplay-integrity.so"), overwrite = true)
     }
 }
 
@@ -78,10 +80,10 @@ val allAbis = mapOf(
     "armeabi-v7a" to "armv7-linux-androideabi",
     "x86_64" to "x86_64-linux-android",
 )
-// Every ABI is built unless `-Preplay.abis=arm64-v8a,x86_64` names some, for a local build on a
+// Every ABI is built unless `-Pengine.abis=arm64-v8a,x86_64` names some, for a local build on a
 // machine without every Rust target. A name that is not an ABI above is an error, not ignored.
-val abis = providers.gradleProperty("replay.abis").orNull?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.let { names ->
-    names.forEach { require(it in allAbis) { "replay.abis: unknown ABI $it; known: ${allAbis.keys.joinToString()}" } }
+val abis = providers.gradleProperty("engine.abis").orNull?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.let { names ->
+    names.forEach { require(it in allAbis) { "engine.abis: unknown ABI $it; known: ${allAbis.keys.joinToString()}" } }
     allAbis.filterKeys { it in names }
 } ?: allAbis
 val clangPrefix = mapOf(

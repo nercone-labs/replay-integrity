@@ -9,35 +9,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.longOrNull
 
-// The data exchanged with the engine. Every type mirrors a type of the `replay` crate and its
-// JSON form; see crates/replay/src/engine.rs. Unknown fields are ignored, so that a field the
+// The data exchanged with the engine. Every type mirrors a type of the `replay-integrity` crate and its
+// JSON form; see crates/replay-integrity/src/engine.rs. Unknown fields are ignored, so that a field the
 // engine adds later does not break an older reader.
 
 object EngineJson {
     val json = Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true; coerceInputValues = true }
 }
-
-@Serializable
-enum class LogLevel {
-    @SerialName("info") INFO,
-    @SerialName("warning") WARNING,
-    @SerialName("error") ERROR,
-}
-
-@Serializable
-data class LogLine(val time: Long, val level: LogLevel = LogLevel.INFO, val message: String)
-
-/** The one JSON object every engine command prints. */
-@Serializable
-data class EngineResponse(
-    val ok: Boolean = false,
-    val result: JsonElement? = null,
-    val error: EngineError? = null,
-    val log: List<LogLine> = emptyList(),
-)
-
-@Serializable
-data class EngineError(val kind: String, val message: String)
 
 @Serializable
 enum class RootManager {

@@ -4,3 +4,4 @@ description = "A reader of ASN.1 Distinguished Encoding Rules (DER, ITU-T X.690)
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+repository.workspace = true
