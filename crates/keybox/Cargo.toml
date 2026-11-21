@@ -4,6 +4,7 @@ description = "The Android attestation keybox XML format: attestation keys and t
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+repository.workspace = true
 
 [dependencies]
 x509.workspace = true

@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use keybox::{KeyAlgorithm, KeyboxDocument};
-use replay::{
+use replay_integrity::{
     ApplyMode, BootHook, BootReport, Conflicts, Declined, Engine, Files, Fingerprint, FingerprintProblem, KeyCategory, KeyProblem, KeyRemoval,
     KeyRemovalSettings, KeyVerdict, KeyboxPolicy, KeyboxVerdict, KeystoreConfig, Layout, Log, Module, OutdatedReason, PackageWatcher, PatchDate, PersistedKey,
     Settings, SpoofFlag, SpoofFlags, Target, TargetList, TargetMode, TargetScope, WatchReport,
@@ -101,7 +101,10 @@ fn the_target_list_always_includes_the_play_stack_and_excludes_xposed() {
     assert_eq!(sorted.len(), packages.len());
     // The rendered list round-trips, keeping modes.
     let rendered = TargetList {
-        targets: vec![replay::Target { package: "a".into(), mode: TargetMode::Generate }, replay::Target { package: "b".into(), mode: TargetMode::Auto }],
+        targets: vec![
+            replay_integrity::Target { package: "a".into(), mode: TargetMode::Generate },
+            replay_integrity::Target { package: "b".into(), mode: TargetMode::Auto },
+        ],
     }
     .render();
     let parsed = TargetList::parse(&rendered);
@@ -376,10 +379,15 @@ fn the_boot_hook_runs_a_copy_of_the_engine_at_a_fixed_path() {
     fs::create_dir_all(root.join("data/adb/magisk")).unwrap();
     let executable = root.join("engine-binary");
     fs::write(&executable, b"#!/system/bin/sh\n").unwrap();
+    // The copy an earlier version installed under its earlier name is removed with the new scripts.
+    let legacy = layout.store().join("replay");
+    fs::create_dir_all(layout.store()).unwrap();
+    fs::write(&legacy, b"old").unwrap();
     let hook = BootHook::install(&layout, &executable, "dev.nercone.replayintegrity", false).unwrap();
     assert!(hook.is_installed());
+    assert!(!legacy.exists());
     let script = fs::read_to_string(&hook.scripts[0]).unwrap();
-    let copy = layout.store().join("replay");
+    let copy = layout.store().join("replay-integrity");
     assert!(script.contains(&format!("'{}' 'boot' '--package' 'dev.nercone.replayintegrity'", copy.display())), "{script}");
     // Without the package watcher, no service script is installed.
     assert!(!hook.watches);
@@ -574,7 +582,7 @@ fn the_service_script_starts_the_package_watcher() {
     assert!(hook.watches);
     let service = root.join("data/adb/service.d").join(BootHook::FILE_NAME);
     let script = fs::read_to_string(&service).unwrap();
-    let copy = layout.store().join("replay");
+    let copy = layout.store().join("replay-integrity");
     // It runs the store's copy with `watch`, in the background, so the root manager does not wait.
     assert!(script.contains(&format!("'{}' 'watch' '--package' '{package}'", copy.display())), "{script}");
     assert!(script.trim_end().ends_with('&'), "{script}");
@@ -604,7 +612,18 @@ fn one_package_watcher_holds_the_lock_at_a_time() {
     assert_eq!(fs::read_to_string(watcher.lock_path()).unwrap(), std::process::id().to_string());
     assert_eq!(watcher.running(), None);
     drop(first);
-    assert!(watcher.lock().unwrap().is_some());
+    // Released with the last descriptor of the file. A test running beside this one in the same
+    // process may be starting a child, which holds a copy of every descriptor until it executes
+    // its program (descriptors are closed on exec only then), so the lock is taken again within
+    // a short wait rather than at once.
+    let started = std::time::Instant::now();
+    loop {
+        if watcher.lock().unwrap().is_some() {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "the lock was not released");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -613,10 +632,16 @@ fn a_watcher_is_told_by_the_engine_copy_and_the_command() {
     let root = temporary_root();
     let layout = Layout::new(&root);
     let watcher = PackageWatcher::new(&layout);
-    let copy = layout.store().join("replay").to_string_lossy().into_owned();
+    let copy = layout.store().join("replay-integrity").to_string_lossy().into_owned();
     let mut arguments = vec![copy.clone()];
     arguments.extend(watcher.arguments("dev.nercone.replayintegrity"));
     assert!(watcher.is_watcher(&arguments));
+    // A watcher started before an update runs the copy under the name of the earlier version,
+    // and must still be found, so that installing the hook ends it.
+    let mut legacy = vec![layout.store().join("replay").to_string_lossy().into_owned()];
+    legacy.extend(watcher.arguments("dev.nercone.replayintegrity"));
+    assert!(watcher.is_watcher(&legacy));
+    assert!(!watcher.is_watcher(&[layout.store().join("other").to_string_lossy().into_owned(), "watch".to_string()]));
     assert!(!watcher.is_watcher(&[copy.clone(), "boot".to_string()]));
     assert!(!watcher.is_watcher(&["/system/bin/sh".to_string(), "watch".to_string()]));
     assert!(!watcher.is_watcher(&[copy]));
@@ -664,7 +689,7 @@ fn temporary_files_of_ended_writers_are_removed() {
 #[test]
 fn the_apply_lock_is_released_when_its_holder_closes_it() {
     let root = temporary_root();
-    let store = replay::Store::new(&Layout::new(&root));
+    let store = replay_integrity::Store::new(&Layout::new(&root));
     let first = store.lock_apply().unwrap();
     drop(first);
     // Taking it again does not wait for anyone.
@@ -682,7 +707,7 @@ fn stopping_a_watcher_waits_until_it_has_ended() {
     // A stand-in watcher: a copy of the shell at the path of the engine copy, running a script
     // named `watch`, so its command line is that of a watcher.
     fs::create_dir_all(layout.store()).unwrap();
-    let shell = layout.store().join("replay");
+    let shell = layout.store().join("replay-integrity");
     fs::copy("/bin/sh", &shell).unwrap();
     fs::write(root.join("watch"), "sleep 30\n").unwrap();
     let mut child = std::process::Command::new(&shell).arg("watch").current_dir(&root).spawn().unwrap();

@@ -4,6 +4,7 @@ description = "Android key attestation: the attestation extension, the trust anc
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+repository.workspace = true
 
 [dependencies]
 der.workspace = true

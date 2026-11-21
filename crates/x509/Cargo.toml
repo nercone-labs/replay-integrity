@@ -4,6 +4,7 @@ description = "X.509 certificates (RFC 5280), their public keys, and PEM text en
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+repository.workspace = true
 
 [dependencies]
 der.workspace = true

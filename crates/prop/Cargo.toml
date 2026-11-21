@@ -4,3 +4,4 @@ description = "Line-based key=value property files that keep their comments and 
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+repository.workspace = true

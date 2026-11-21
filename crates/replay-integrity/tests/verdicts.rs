@@ -2,7 +2,7 @@
 //! that a usable key does not need a keybox signed by Google.
 
 use attestation::{CertificateStatus, ChainProblem};
-use replay::{KeyProblem, KeyVerdict, KeyboxVerdict};
+use replay_integrity::{KeyProblem, KeyVerdict, KeyboxVerdict};
 
 fn key(algorithm: &str, problems: Vec<KeyProblem>) -> KeyVerdict {
     KeyVerdict { algorithm: algorithm.to_string(), serial: String::new(), root: None, expires: None, problems }

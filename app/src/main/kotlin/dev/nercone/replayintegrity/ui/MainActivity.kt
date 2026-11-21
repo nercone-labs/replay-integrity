@@ -10,19 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
@@ -31,37 +19,16 @@ import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VerifiedUser
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeFlexibleTopAppBar
-import androidx.compose.material3.LinearWavyProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.ShortNavigationBar
-import androidx.compose.material3.ShortNavigationBarItem
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.TopAppBarState
-import androidx.compose.material3.WideNavigationRail
-import androidx.compose.material3.WideNavigationRailItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.nercone.replayintegrity.R
 import dev.nercone.replayintegrity.config.Settings
@@ -77,12 +44,11 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * The application frame: the top bar, the navigation (a bar at the bottom of a narrow window, a
- * rail at the side of a wide one), and the screen of the destination. The frame also owns the
- * dialogs and sheets that any screen can open: the engine log and the restricted-root dialog.
+ * The application: its destinations, where the user is, and what any screen can open (the engine
+ * log and the restricted-root dialog), in the frame shared with TypeFace Droplet (`Frame`).
  */
 object ReplayApp {
-    enum class Destination(val title: Int, val selectedIcon: ImageVector, val icon: ImageVector) {
+    enum class Destination(override val title: Int, override val selectedIcon: ImageVector, override val icon: ImageVector) : Frame.Destination {
         HOME(R.string.tab_home, Icons.Filled.Home, Icons.Outlined.Home),
         ATTESTATION(R.string.tab_attestation, Icons.Filled.VerifiedUser, Icons.Outlined.VerifiedUser),
         TARGETS(R.string.tab_targets, Icons.Filled.Apps, Icons.Outlined.Apps),
@@ -97,14 +63,11 @@ object ReplayApp {
         fun open(destination: Destination, page: SettingsScreen.Page?)
     }
 
-    /** The window width from which the navigation is a rail at the side. */
-    val RAIL_WIDTH = 600.dp
-
-    @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
     @Composable
     fun Content(model: AppViewModel) {
         val state by model.state.collectAsStateWithLifecycle()
         val settings by model.settings.collectAsStateWithLifecycle()
+        val data = remember(state, settings) { ScreenData(state, settings) }
         var destination by rememberSaveable { mutableStateOf(Destination.HOME) }
         var page by rememberSaveable { mutableStateOf<SettingsScreen.Page?>(null) }
         val route = Route(destination, page.takeIf { destination == Destination.SETTINGS })
@@ -119,63 +82,28 @@ object ReplayApp {
         BackHandler(enabled = route.page != null) { page = null }
         BackHandler(enabled = route.page == null && destination != Destination.HOME) { navigator.open(Destination.HOME, null) }
 
-        NotificationRequest(state, settings, model)
+        NotificationRequest(data, model)
 
-        val window = LocalWindowInfo.current.containerSize
-        val wide = with(LocalDensity.current) { window.width.toDp() } >= RAIL_WIDTH
-        // Each route has its own top bar state, so that a screen always opens with the bar expanded.
-        val barState = rememberSaveable(route, saver = TopAppBarState.Saver) { TopAppBarState(-Float.MAX_VALUE, 0f, 0f) }
-        val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(barState)
-        val enter = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
-        val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
-
-        Row(Modifier.fillMaxSize()) {
-            if (wide) Rail(destination) { navigator.open(it, null) }
-            Scaffold(
-                modifier = Modifier.weight(1f).nestedScroll(scrollBehavior.nestedScrollConnection),
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                topBar = {
-                    Column {
-                        LargeFlexibleTopAppBar(
-                            title = { Text(title(route)) },
-                            subtitle = state.operation?.let { { Text(Labels.operation(it)) } },
-                            navigationIcon = {
-                                if (route.page != null) {
-                                    IconButton(onClick = { page = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) }
-                                }
-                            },
-                            scrollBehavior = scrollBehavior,
-                            colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                                scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                            ),
-                        )
-                        if (state.operation != null) LinearWavyProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Widgets.SCREEN_PADDING))
-                    }
-                },
-                bottomBar = { if (!wide) Bar(destination) { navigator.open(it, null) } },
-            ) { padding ->
-                AnimatedContent(
-                    targetState = route,
-                    transitionSpec = { fadeIn(enter) togetherWith fadeOut(exit) },
-                    modifier = Modifier.fillMaxSize().padding(padding),
-                    label = "route",
-                ) { shown ->
-                    Box(Modifier.fillMaxSize()) {
-                        when (shown.destination) {
-                            Destination.HOME -> HomeScreen.Content(state, settings, model, navigator)
-                            Destination.ATTESTATION -> AttestationScreen.Content(state, settings, model)
-                            Destination.TARGETS -> TargetsScreen.Content(state, settings, model)
-                            Destination.SETTINGS -> SettingsScreen.Content(state, settings, model, shown.page) { page = it }
-                        }
-                    }
-                }
+        Frame.Content(
+            destinations = Destination.entries,
+            destination = destination,
+            route = route,
+            title = title(route),
+            operation = state.operation?.let { Labels.operation(it) },
+            onNavigate = { navigator.open(it, null) },
+            onBack = if (route.page != null) ({ page = null }) else null,
+        ) { shown ->
+            when (shown.destination) {
+                Destination.HOME -> HomeScreen.Content(data, model, navigator)
+                Destination.ATTESTATION -> AttestationScreen.Content(data, model)
+                Destination.TARGETS -> TargetsScreen.Content(data, model)
+                Destination.SETTINGS -> SettingsScreen.Content(data, model, shown.page) { page = it }
             }
         }
 
-        if (state.logShown) Notices.Log(state.log) { model.showLog(false) }
+        if (state.logShown) Frame.Log(state.log) { model.showLog(false) }
         (state.outcome as? Outcome.Failed)?.takeIf { it.restricted }?.let {
-            Restricted(it, onRecheck = { model.dismissOutcome(); model.recheck() }, onDismiss = model::dismissOutcome)
+            Frame.Restricted(it.text, onRecheck = { model.dismissOutcome(); model.recheck() }, onDismiss = model::dismissOutcome)
         }
     }
 
@@ -186,48 +114,17 @@ object ReplayApp {
         else -> stringResource(route.destination.title)
     }
 
-    @Composable
-    fun Bar(destination: Destination, onNavigate: (Destination) -> Unit) {
-        ShortNavigationBar {
-            Destination.entries.forEach { entry ->
-                val selected = destination == entry
-                ShortNavigationBarItem(
-                    selected = selected,
-                    onClick = { onNavigate(entry) },
-                    icon = { Icon(if (selected) entry.selectedIcon else entry.icon, null) },
-                    label = { Text(stringResource(entry.title)) },
-                )
-            }
-        }
-    }
-
-    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
-    @Composable
-    fun Rail(destination: Destination, onNavigate: (Destination) -> Unit) {
-        WideNavigationRail(arrangement = Arrangement.Center) {
-            Destination.entries.forEach { entry ->
-                val selected = destination == entry
-                WideNavigationRailItem(
-                    railExpanded = false,
-                    selected = selected,
-                    onClick = { onNavigate(entry) },
-                    icon = { Icon(if (selected) entry.selectedIcon else entry.icon, null) },
-                    label = { Text(stringResource(entry.title)) },
-                )
-            }
-        }
-    }
-
     /**
      * Asks for the notification permission once, after the configuration is first applied:
      * notifications report failures of the runs after a boot and of the scheduled refreshes,
      * which only happen from then on.
      */
     @Composable
-    fun NotificationRequest(state: UiState, settings: Settings.Values, model: AppViewModel) {
+    fun NotificationRequest(data: ScreenData, model: AppViewModel) {
+        val settings = data.settings
         val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
         val context = LocalContext.current
-        val outcome = state.outcome
+        val outcome = data.state.outcome
         LaunchedEffect(outcome) {
             val applied = outcome is Outcome.Refreshed || outcome is Outcome.Repaired || outcome is Outcome.Installed
             if (applied && !settings.notificationsAsked && settings.notifyFailures &&
@@ -237,22 +134,5 @@ object ReplayApp {
                 notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-    }
-
-    /** Explains that the root manager restricts root, and how to grant it fully. */
-    @Composable
-    fun Restricted(failure: Outcome.Failed, onRecheck: () -> Unit, onDismiss: () -> Unit) {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text(stringResource(R.string.restricted_title)) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stringResource(R.string.restricted_text))
-                    Text(failure.text, style = MaterialTheme.typography.bodySmall, color = Widgets.secondary)
-                }
-            },
-            confirmButton = { TextButton(onClick = onRecheck) { Text(stringResource(R.string.check_again)) } },
-            dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.dismiss)) } },
-        )
     }
 }

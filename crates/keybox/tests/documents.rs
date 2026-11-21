@@ -227,3 +227,13 @@ fn characters_xml_does_not_allow_are_not_rendered() {
     let reparsed = KeyboxDocument::parse(&rendered).unwrap();
     assert_eq!(reparsed.keyboxes[0].device_id.as_deref(), Some("a\u{fffd}b\u{fffd}c\td\ne"));
 }
+
+#[test]
+fn elements_nested_without_bound_are_refused_instead_of_overflowing_the_stack() {
+    use keybox::Node;
+    let nested = |depth: usize| format!("{}{}", "<a>".repeat(depth), "</a>".repeat(depth));
+    assert!(Node::parse(&nested(Node::MAX_DEPTH)).is_ok());
+    assert!(matches!(Node::parse(&nested(Node::MAX_DEPTH + 1)), Err(KeyboxError::Syntax(_))));
+    // Deep enough to overflow the stack when the tree is dropped, were it built.
+    assert!(matches!(KeyboxDocument::parse(&nested(1_000_000)), Err(KeyboxError::Syntax(_))));
+}

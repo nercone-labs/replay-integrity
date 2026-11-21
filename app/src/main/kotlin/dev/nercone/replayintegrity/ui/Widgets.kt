@@ -1,15 +1,25 @@
 package dev.nercone.replayintegrity.ui
 
+import android.content.ActivityNotFoundException
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.rememberScrollState
@@ -26,6 +36,7 @@ import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -33,6 +44,7 @@ import androidx.compose.material3.ExposedDropdownMenu
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItemColors
@@ -51,25 +63,34 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.toShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.UriHandler
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.max
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.graphics.shapes.CornerRounding
+import androidx.graphics.shapes.RoundedPolygon
 import dev.nercone.replayintegrity.R
 
 /** User interface parts shared by the screens. Each one is a complete part, with nothing specific to one screen. */
@@ -88,6 +109,15 @@ object Widgets {
 
     /** The tone of a notice. */
     enum class Tone { INFORMATION, WARNING, ERROR }
+
+    /** How a state reads in the status card (`Hero`): as wanted, still unknown, or in need of the user. */
+    enum class Mood { GOOD, NEUTRAL, BAD }
+
+    /** The rounded hexagon of the application icon, for the emblem of the status card. */
+    val HEXAGON: RoundedPolygon = RoundedPolygon(numVertices = 6, rounding = CornerRounding(0.22f)).normalized()
+
+    /** An action of the status card. The first of the actions is the main one. */
+    data class Action(val text: String, val icon: ImageVector, val enabled: Boolean, val onClick: () -> Unit)
 
     /**
      * A screen: a lazy list, centred at `maxWidth` in a wide window, that scrolls from anywhere in
@@ -343,6 +373,120 @@ object Widgets {
         }
     }
 
+    /**
+     * The status card at the top of the home screen: an emblem, the state in a title and a
+     * sentence, an optional `detail` (such as the error of a reading) and the actions. While
+     * `busy`, the emblem is a loading indicator. `emblem` draws on the hexagon in the color it is
+     * given; the hexagon turns when the state becomes good, and back when it no longer is.
+     */
+    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+    @Composable
+    fun Hero(
+        mood: Mood,
+        busy: Boolean,
+        title: String,
+        text: String,
+        detail: String? = null,
+        actions: List<Action> = emptyList(),
+        help: String? = null,
+        emblem: @Composable (Color) -> Unit,
+    ) {
+        val colors = MaterialTheme.colorScheme
+        val effects = MaterialTheme.motionScheme.defaultEffectsSpec<Color>()
+        val container by animateColorAsState(
+            when (mood) {
+                Mood.GOOD -> colors.primaryContainer
+                Mood.NEUTRAL -> colors.surface
+                Mood.BAD -> colors.errorContainer
+            },
+            effects,
+            label = "container",
+        )
+        val shape by animateColorAsState(
+            when (mood) {
+                Mood.GOOD -> colors.primary
+                Mood.NEUTRAL -> colors.outline
+                Mood.BAD -> colors.error
+            },
+            effects,
+            label = "emblem",
+        )
+        val onShape = when (mood) {
+            Mood.GOOD -> colors.onPrimary
+            Mood.NEUTRAL -> colors.surface
+            Mood.BAD -> colors.onError
+        }
+        // A hexagon turned by 60 degrees is the same hexagon: the turn is seen only while it runs.
+        val rotation by animateFloatAsState(if (mood == Mood.GOOD) 60f else 0f, MaterialTheme.motionScheme.slowSpatialSpec(), label = "rotation")
+        Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.extraLarge, color = container) {
+            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    Box(Modifier.size(EMBLEM_SIZE), contentAlignment = Alignment.Center) {
+                        if (busy) {
+                            ContainedLoadingIndicator(Modifier.size(EMBLEM_SIZE))
+                        } else {
+                            Box(Modifier.size(EMBLEM_SIZE).rotate(rotation).clip(HEXAGON.toShape()).background(shape))
+                            emblem(onShape)
+                        }
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(title, style = MaterialTheme.typography.headlineSmall)
+                        Text(text, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                if (actions.isNotEmpty()) Actions(actions)
+                help?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
+        }
+    }
+
+    /** The size of the emblem of the status card. */
+    val EMBLEM_SIZE = 72.dp
+
+    /** A row of buttons of equal width: the first is the main action, the others are tonal. */
+    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+    @Composable
+    fun Actions(actions: List<Action>, modifier: Modifier = Modifier) {
+        val height = ButtonDefaults.MediumContainerHeight
+        Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(SPACING)) {
+            actions.forEachIndexed { index, action ->
+                val content: @Composable RowScope.() -> Unit = {
+                    Icon(action.icon, null, Modifier.size(ButtonDefaults.iconSizeFor(height)))
+                    Spacer(Modifier.size(ButtonDefaults.iconSpacingFor(height)))
+                    Text(action.text, style = ButtonDefaults.textStyleFor(height), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                val button = Modifier.weight(1f).heightIn(min = height)
+                val padding = ButtonDefaults.contentPaddingFor(height)
+                if (index == 0) {
+                    Button(onClick = action.onClick, enabled = action.enabled, shapes = ButtonDefaults.shapes(), contentPadding = padding, modifier = button, content = content)
+                } else {
+                    FilledTonalButton(onClick = action.onClick, enabled = action.enabled, shapes = ButtonDefaults.shapes(), contentPadding = padding, modifier = button, content = content)
+                }
+            }
+        }
+    }
+
+    /**
+     * The name of the application with its icon and `text` under it (such as the version), for
+     * the page about the application. The icon is drawn from the parts of the adaptive icon,
+     * which a painter cannot draw whole.
+     */
+    @Composable
+    fun Identity(text: String) {
+        Panel(0, 1) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Box(Modifier.size(64.dp).clip(MaterialTheme.shapes.large).background(colorResource(R.color.ic_launcher_background))) {
+                    Image(painterResource(R.drawable.ic_launcher_foreground), null, Modifier.fillMaxSize())
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleLarge)
+                    Text(text, style = MaterialTheme.typography.bodyMedium, color = secondary)
+                }
+            }
+        }
+    }
+
     /** A dialog that asks to confirm a destructive or far-reaching action. */
     @Composable
     fun Confirm(title: String, text: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
@@ -519,6 +663,20 @@ object Widgets {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Opens `uri` in the application that handles it, when the user asked for it. A system
+     * without such an application (a browser) has none to open it with, which is not an error.
+     */
+    fun open(handler: UriHandler, uri: String) {
+        try {
+            handler.openUri(uri)
+        } catch (error: IllegalArgumentException) {
+            // No activity handles the link.
+        } catch (error: ActivityNotFoundException) {
+            // No activity handles the link.
         }
     }
 

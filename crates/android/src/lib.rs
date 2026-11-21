@@ -1,7 +1,7 @@
 //! Interfaces to the running Android system: system properties, the font service
 //! (`cmd font`), the package manager (`cmd package`, `dumpsys package`,
-//! `/data/system/packages.list`), the activity manager, processes and their capabilities, the
-//! keys of the keystore, and watches of files.
+//! `/data/system/packages.list`), the activity manager, processes, their capabilities and
+//! control groups, the keys of the keystore, and watches of files.
 //!
 //! Every system program is started directly, without a shell. Parsing of their output is
 //! separated from running them, so that it can be tested on any system.
@@ -9,6 +9,7 @@
 mod activity_manager;
 mod capability;
 mod command;
+mod control_group;
 mod file_watch;
 mod font_service;
 mod keystore;
@@ -20,6 +21,7 @@ mod property;
 pub use activity_manager::ActivityManager;
 pub use capability::{Capability, CapabilitySet, ProcessCapabilities};
 pub use command::{CommandError, CommandOutput, SystemCommand};
+pub use control_group::ControlGroup;
 pub use file_watch::FileWatch;
 pub use font_service::FontService;
 pub use keystore::{DeviceKeystore, KeyDeletion};

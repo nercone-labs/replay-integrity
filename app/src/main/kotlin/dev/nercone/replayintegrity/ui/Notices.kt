@@ -1,52 +1,36 @@
 package dev.nercone.replayintegrity.ui
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.nercone.replayintegrity.R
-import dev.nercone.replayintegrity.config.Settings
 import dev.nercone.replayintegrity.engine.ApplyReport
-import dev.nercone.replayintegrity.engine.LogLevel
-import dev.nercone.replayintegrity.engine.LogLine
 
 /**
  * What every screen tells at its top, the same way on each: the outcome of the last operation,
  * and the settings that changed since they were applied. A restricted root is told by a dialog
- * of the frame instead (`ReplayApp.Restricted`).
+ * of the frame instead (`Frame.Restricted`).
  */
 object Notices {
     /**
      * Adds the notices to the list of a screen, before its own items. `extra` is added under
      * each, for a screen whose list spaces its items less than `Widgets.SPACING`.
      */
-    fun LazyListScope.notices(state: UiState, settings: Settings.Values, model: AppViewModel, extra: Dp = 0.dp) {
-        val outcome = state.outcome?.takeIf { (it as? Outcome.Failed)?.restricted != true }
+    fun LazyListScope.notices(data: ScreenData, model: AppViewModel, extra: Dp = 0.dp) {
+        val outcome = data.state.outcome?.takeIf { (it as? Outcome.Failed)?.restricted != true }
         if (outcome != null) item(key = "outcome") {
             Box(Modifier.padding(bottom = extra)) { Outcome(outcome, onLog = { model.showLog(true) }, onDismiss = model::dismissOutcome) }
         }
-        if (pending(state, settings)) item(key = "pending") { Box(Modifier.padding(bottom = extra)) { Pending(state.idle, onApply = model::repair) } }
-    }
-
-    /** Whether the settings the engine reads changed since they were last applied. */
-    fun pending(state: UiState, settings: Settings.Values): Boolean {
-        val status = state.status ?: return false
-        return settings.applied && !settings.engine().sameAs(status.settings)
+        if (data.pending) item(key = "pending") { Box(Modifier.padding(bottom = extra)) { Pending(data.state.idle, onApply = model::repair) } }
     }
 
     @Composable
@@ -117,29 +101,4 @@ object Notices {
         stringResource(R.string.summary_keybox_repaired).takeIf { report.keyboxRepaired },
         stringResource(if (restarted) R.string.summary_restarted else R.string.summary_not_restarted),
     ).joinToString("\n")
-
-    /** The engine log of the last operation, in a sheet. */
-    @OptIn(ExperimentalMaterial3Api::class)
-    @Composable
-    fun Log(lines: List<LogLine>, onDismiss: () -> Unit) {
-        ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-            Text(stringResource(R.string.log), style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
-            if (lines.isEmpty()) Text(stringResource(R.string.log_empty), modifier = Modifier.padding(24.dp))
-            LazyColumn(contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 32.dp)) {
-                items(lines) { line ->
-                    Text(
-                        "${Labels.dateTime(line.time)}  ${line.message}",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = when (line.level) {
-                            LogLevel.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
-                            LogLevel.WARNING -> MaterialTheme.colorScheme.tertiary
-                            LogLevel.ERROR -> MaterialTheme.colorScheme.error
-                        },
-                        modifier = Modifier.padding(vertical = 2.dp),
-                    )
-                }
-            }
-        }
-    }
 }

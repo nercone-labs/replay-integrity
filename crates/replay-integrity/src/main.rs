@@ -1,8 +1,10 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use replay::{ApplyMode, Component, Engine, KeyboxPolicy, Layout, LogLine, PackageWatcher, ReplayError, Settings};
+use android::ControlGroup;
+
+use replay_integrity::{ApplyMode, Component, Engine, KeyboxPolicy, Layout, LogLine, PackageWatcher, ReplayError, Settings};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -27,7 +29,7 @@ enum Command {
     Version,
 }
 
-/// The parsed command line: `replay <command> [arguments] [--root DIR] [--status FILE] [--settings FILE]`.
+/// The parsed command line: `replay-integrity <command> [arguments] [--root DIR] [--status FILE] [--settings FILE]`.
 ///
 /// Every command prints one JSON object to standard output:
 /// `{"ok": true, "result": ..., "log": [...]}` or
@@ -57,21 +59,21 @@ impl CommandLine {
     /// refresh comes in time.
     const DEFAULT_EXPIRY_MARGIN_HOURS: i64 = 48;
 
-    const USAGE: &'static str = "usage: replay status [--status STATUS.json]
-       replay inspect-keybox <keybox.xml> [--status STATUS.json] [--lenient]
-       replay inspect-fingerprint <fingerprint.prop|fingerprint.json>
-       replay install-keybox <keybox.xml> [--source TEXT] [--status STATUS.json] [--lenient]
-                             [--policy replace|no-downgrade|when-needed] [--expiry-margin HOURS]
-       replay install-fingerprint <fingerprint.prop|fingerprint.json> [--source TEXT] [--settings SETTINGS.json]
-       replay targets [--settings SETTINGS.json]
-       replay apply [--no-restart] [--settings SETTINGS.json] [--status STATUS.json]
-       replay boot --package PACKAGE | replay watch --package PACKAGE
-       replay restart [--settings SETTINGS.json]
-       replay outdated-keys [--settings SETTINGS.json] [--status STATUS.json]
-       replay remove-key --uid UID --alias ALIAS [--status STATUS.json]
-       replay disable-conflicts | version
-       replay install-module <keystore|integrity> <module.zip>
-       replay hook install --package PACKAGE [--no-watch] | replay hook remove
+    const USAGE: &'static str = "usage: replay-integrity status [--status STATUS.json]
+       replay-integrity inspect-keybox <keybox.xml> [--status STATUS.json] [--lenient]
+       replay-integrity inspect-fingerprint <fingerprint.prop|fingerprint.json>
+       replay-integrity install-keybox <keybox.xml> [--source TEXT] [--status STATUS.json] [--lenient]
+                                       [--policy replace|no-downgrade|when-needed] [--expiry-margin HOURS]
+       replay-integrity install-fingerprint <fingerprint.prop|fingerprint.json> [--source TEXT] [--settings SETTINGS.json]
+       replay-integrity targets [--settings SETTINGS.json]
+       replay-integrity apply [--no-restart] [--settings SETTINGS.json] [--status STATUS.json]
+       replay-integrity boot --package PACKAGE | replay-integrity watch --package PACKAGE
+       replay-integrity restart [--settings SETTINGS.json]
+       replay-integrity outdated-keys [--settings SETTINGS.json] [--status STATUS.json]
+       replay-integrity remove-key --uid UID --alias ALIAS [--status STATUS.json]
+       replay-integrity disable-conflicts | version
+       replay-integrity install-module <keystore|integrity> <module.zip>
+       replay-integrity hook install --package PACKAGE [--no-watch] | replay-integrity hook remove
 options: --root DIR   the base directory, an absolute path (default /)";
 
     fn parse() -> Result<CommandLine, lexopt::Error> {
@@ -272,11 +274,19 @@ fn main() -> ExitCode {
     let command_line = match CommandLine::parse() {
         Ok(command_line) => command_line,
         Err(error) => {
-            eprintln!("replay: {error}\n{}", CommandLine::USAGE);
+            eprintln!("replay-integrity: {error}\n{}", CommandLine::USAGE);
             println!("{}", json!({ "ok": false, "error": { "kind": "usage", "message": error.to_string() }, "log": [] }));
             return ExitCode::from(2);
         }
     };
+    // An engine the application started through an `su` that raises the calling process itself
+    // (KernelSU, APatch) is in the group of the application process, which the system freezes
+    // while the application is cached and ends whole with it. It leaves that group before
+    // anything else, and the processes it starts are outside it too. Run as the application, it
+    // has nothing to leave the system for, and could not.
+    if Engine::uid() == 0 {
+        ControlGroup::leave_application(Path::new("/"));
+    }
     let (result, log) = command_line.run();
     let (output, status) = match result {
         Ok(result) => (json!({ "ok": true, "result": result, "log": log }), ExitCode::SUCCESS),

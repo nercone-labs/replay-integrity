@@ -31,7 +31,7 @@ pub struct State {
 /// `state.json`, the settings applied last (`settings.json`), the installed fingerprint
 /// (`fingerprint.prop`), the keybox replaced last (`previous-keybox.xml`), the certificate
 /// status list applied last (`status.json`), the log, the copy
-/// of the engine that the boot hook runs (`replay`), and the lock of the package watcher
+/// of the engine that the boot hook runs (`replay-integrity`), and the lock of the package watcher
 /// (`watch.lock`).
 pub struct Store {
     pub directory: PathBuf,
@@ -46,7 +46,10 @@ impl Store {
     pub const SETTINGS: &'static str = "settings.json";
     /// The certificate status list `apply` was given last (`Store::status_list`).
     pub const STATUS_LIST: &'static str = "status.json";
-    pub const EXECUTABLE: &'static str = "replay";
+    pub const EXECUTABLE: &'static str = "replay-integrity";
+    /// The names earlier versions gave the copy of the engine, removed once the boot hook runs
+    /// the copy named `EXECUTABLE`.
+    pub const LEGACY_EXECUTABLES: [&'static str; 1] = ["replay"];
     pub const EXECUTABLE_MODE: u32 = 0o700;
     /// The lock that `apply` and the package watcher hold while they read the settings and
     /// write the configuration, so that neither writes from settings the other replaced.
@@ -108,6 +111,17 @@ impl Store {
     /// so the hook runs a copy at a fixed path instead.
     pub fn executable(&self) -> PathBuf {
         self.directory.join(Store::EXECUTABLE)
+    }
+
+    /// The copies of the engine that earlier versions installed under other names
+    /// (`LEGACY_EXECUTABLES`).
+    pub fn legacy_executables(&self) -> Vec<PathBuf> {
+        Store::LEGACY_EXECUTABLES.iter().map(|name| self.directory.join(name)).collect()
+    }
+
+    /// Removes `legacy_executables`. Called once no boot script runs them any more.
+    pub fn remove_legacy_executables(&self) -> Result<(), ReplayError> {
+        self.legacy_executables().iter().try_for_each(|path| Files::remove(path).map(|_| ()))
     }
 
     /// Copies `source` (the running engine) to `executable`, replacing an earlier copy

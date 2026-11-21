@@ -46,7 +46,9 @@ object TargetsScreen {
     val PACKAGE = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
 
     @Composable
-    fun Content(state: UiState, settings: Settings.Values, model: AppViewModel) {
+    fun Content(data: ScreenData, model: AppViewModel) {
+        val state = data.state
+        val settings = data.settings
         LaunchedEffect(Unit) { model.loadApps() }
         var query by rememberSaveable { mutableStateOf("") }
         val targets = state.status?.targets?.targets.orEmpty()
@@ -58,7 +60,7 @@ object TargetsScreen {
         val gap = ListItemDefaults.SegmentedGap
         val extra = Widgets.SPACING - gap
         Widgets.Screen(spacing = gap) {
-            notices(state, settings, model, extra)
+            notices(data, model, extra)
             item(key = "rules") { Box(Modifier.padding(bottom = extra)) { Rules(settings, model) } }
             item(key = "header") {
                 Column(Modifier.padding(bottom = extra), verticalArrangement = Arrangement.spacedBy(Widgets.SPACING)) {

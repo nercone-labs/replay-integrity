@@ -296,6 +296,7 @@
     <string name="settings_store">エンジンは状態、適用した設定、インストールしたフィンガープリント、直前のキーボックス、ブートフックが実行する自身のコピーを %1$s に保存します。</string>
     <string name="settings_capabilities">root の権限</string>
     <string name="settings_capabilities_ok">エンジンに必要な権限がすべてそろっています</string>
+    <string name="settings_source_title">ソースコード</string>
     <string name="settings_credits">クレジット</string>
     <string name="settings_credits_short">TEESimulator-RS、Play Integrity Fork、AlwaysStrong</string>
     <string name="settings_credits_text">Replay Integrity は TEESimulator-RS(Enginex0、JingMatrix)と Play Integrity Fork(osm0sis、chiteroman)を操作し、AlwaysStrong(Evokerr)のキーボックスとフィンガープリントの取得元を使います。Shizuku と Sui(RikkaApps)に対応しています。</string>
