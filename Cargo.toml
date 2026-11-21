@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/der", "crates/x509", "crates/attestation", "crates/keybox", "crates/prop", "crates/android", "crates/replay-integrity"]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 authors = ["Nercone <nercone@nercone.dev>"]
 repository = "https://github.com/nercone-labs/replay-integrity"
