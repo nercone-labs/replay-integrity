@@ -982,7 +982,9 @@ so that the build files differ only in the names of the application.
 Every dependency is verified (`gradle/verification-metadata.xml`, SHA-256). The file is generated
 by Gradle (`--write-verification-metadata sha256` with the tasks of the CI and of a local build:
 `:app:testDebugUnitTest :app:assembleRelease :app:assembleDebug :app:lintDebug`), after its
-components were emptied, so that versions no longer used leave it. Gradle records the artifacts of
+components were emptied, so that versions no longer used leave it, and with an empty Gradle home
+(`-g <empty directory>`): Gradle records only what it downloads, and the BOMs and parent POMs that
+an earlier build left in the cache were missing, which failed the CI, whose cache is empty. Gradle records the artifacts of
 the machine it runs on only: `aapt2` comes in one jar per system, and the jar for Linux, where the
 CI builds, is added by hand from Google's Maven repository. Both applications share the file.
 
