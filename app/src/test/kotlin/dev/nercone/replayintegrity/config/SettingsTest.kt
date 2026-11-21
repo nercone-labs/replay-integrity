@@ -5,6 +5,8 @@ import dev.nercone.replayintegrity.engine.KeyRemovalSettings
 import dev.nercone.replayintegrity.engine.KeyboxPolicy
 import dev.nercone.replayintegrity.engine.TargetMode
 import dev.nercone.replayintegrity.engine.TargetScope
+import dev.nercone.replayintegrity.net.Downloader
+import dev.nercone.replayintegrity.net.KeyboxSource
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -45,10 +47,19 @@ class SettingsTest {
     }
 
     @Test
-    fun aDocumentWithOneKeyboxSourceKeepsIt() {
-        // A document written before more keybox sources existed keeps its source.
-        val values = Settings.decode("""{"keyboxUrl":"https://mirror.example/key"}""")
-        assertEquals(listOf("https://mirror.example/key"), values.keyboxSources())
+    fun aDocumentWithTheOldKeyboxUrlFieldsMigratesToSources() {
+        // A document written before sources carried their own settings held only URLs. Each
+        // migrates to a source; the default mirror keeps the leniency it had implicitly, and any
+        // other URL migrates strict, so an update changes no behavior.
+        val values = Settings.decode("""{"keyboxUrl":"${Downloader.DEFAULT_KEYBOX_URL}","extraKeyboxUrls":["https://other.example/key"]}""")
+        assertEquals(
+            listOf(KeyboxSource(Downloader.DEFAULT_KEYBOX_URL, lenient = true), KeyboxSource("https://other.example/key", lenient = false)),
+            values.keyboxSources,
+        )
+        // A user's own primary URL migrates strict.
+        assertEquals(listOf(KeyboxSource("https://mirror.example/key", lenient = false)), Settings.decode("""{"keyboxUrl":"https://mirror.example/key"}""").keyboxSources)
+        // A document from before any keybox source existed falls back to the default seed.
+        assertEquals(Downloader.DEFAULT_KEYBOX_SOURCES, Settings.decode("""{"refreshHours":3}""").keyboxSources)
         assertEquals("the Play stack generates its keys by default", TargetMode.GENERATE, values.playTargetMode)
     }
 
@@ -61,8 +72,30 @@ class SettingsTest {
 
     @Test
     fun keyboxSourcesAreTriedInOrderWithoutRepeats() {
-        val values = Settings.Values(keyboxUrl = "https://a.example/key", extraKeyboxUrls = listOf("https://b.example/key", "https://a.example/key", "https://c.example/key"))
-        assertEquals(listOf("https://a.example/key", "https://b.example/key", "https://c.example/key"), values.keyboxSources())
+        val values = Settings.Values(keyboxSources = listOf(
+            KeyboxSource("https://a.example/key", lenient = true),
+            KeyboxSource("https://b.example/key"),
+            KeyboxSource("https://a.example/key"),
+            KeyboxSource("https://c.example/key"),
+        ))
+        assertEquals(
+            listOf(KeyboxSource("https://a.example/key", lenient = true), KeyboxSource("https://b.example/key"), KeyboxSource("https://c.example/key")),
+            values.orderedKeyboxSources(),
+        )
+    }
+
+    @Test
+    fun leniencyIsAPerSourceSettingThatRoundTrips() {
+        // Leniency is each source's own setting, honored on any source — not derived from the URL.
+        val values = Settings.Values(keyboxSources = listOf(
+            KeyboxSource("https://custom.example/key", lenient = true),
+            KeyboxSource(Downloader.DEFAULT_KEYBOX_URL, lenient = false),
+        ))
+        assertEquals(values, json.decodeFromString(Settings.Values.serializer(), json.encodeToString(Settings.Values.serializer(), values)))
+        assertTrue("a user source can be lenient", values.keyboxSources[0].lenient)
+        assertTrue("the default mirror's URL is not special-cased", !values.keyboxSources[1].lenient)
+        // A fresh install seeds the default mirror, lenient.
+        assertEquals(listOf(KeyboxSource(Downloader.DEFAULT_KEYBOX_URL, lenient = true)), Settings.Values().keyboxSources)
     }
 
     @Test

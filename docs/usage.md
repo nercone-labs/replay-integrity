@@ -197,18 +197,31 @@ In both, a downloaded keybox is installed only when it is at least as good as th
 it must have a usable EC key if the installed one has one, and, when both or neither have one,
 at least as many usable keys. A keybox
 that a mirror serves revoked, expired or untrusted is therefore kept out, and the next source is
-tried; the installed keybox stays, and this is not reported as a failure. Broken XML alone does
-not keep a keybox out, because its keys are written again (below). A keybox you import is
+tried; the installed keybox stays, and this is not reported as a failure. A keybox you import is
 installed even when it is weak, as long as one of its keys matches its certificate.
 
+A keybox source may serve the keybox in any of several containers, which are unwrapped before it
+is read: the plain XML, base64 of it, a gzip of it, or a zip holding one file, in any nesting
+(base64 of a gzip, say). Each container is told apart with certainty — by its leading bytes, or,
+for base64, by its alphabet — so a container is never mistaken for a keybox or the reverse. A
+source whose download, after every container is unwrapped, is not a keybox (an HTML error page,
+say) is a failure, and the next source is tried.
+
 What is written to `keybox.xml` is not the downloaded file itself but its keys, checked and
-written again as a well-formed keybox: mirrors often serve files with broken XML (a missing
-quote, a watermark element), from which the keystore would read no key at all. When a keybox
-has usable keys, the others (revoked, untrusted, expired) are left out, so that the keystore
-never uses them. A `keybox.xml` that another tool put there with broken XML is written again,
-with the keys that can be recovered from it, at the next repair or boot; the original is kept in
-`/data/adb/replay-integrity/` as the previous keybox. Recovering keys keeps one keybox without its
-device ID, which the keystore does not read.
+written again as a well-formed keybox. When a keybox has usable keys, the others (revoked,
+untrusted, expired) are left out, so that the keystore never uses them.
+
+A keybox must be well-formed XML, unless its source is set to read leniently. Some mirrors serve
+keyboxes with broken markup (a missing quote, a watermark element), from which a keystore reads no
+key at all. **Lenient** is a per-source setting (Settings → Sources): with it on, the keys are
+recovered from the broken document and written again; with it off, a damaged keybox is a failure
+and the next source is tried. It is off by default and on only for the default mirror, which is
+known to need it, and the user can turn it off there or on for a source they add. A file you
+import is always read strictly. The leniency is thus never extended to a source that did not ask
+for it, while any source that needs it can have it. A `keybox.xml` that another tool put there with
+broken XML is also written again, with the keys recovered from it, at the next repair or boot; the
+original is kept in `/data/adb/replay-integrity/` as the previous keybox. Recovering keys keeps one
+keybox without its device ID, which the keystore does not read.
 
 An RSA key is not needed for STRONG: Play Integrity attests with EC, and TEESimulator-RS signs
 RSA requests with the EC key when there is no RSA key.

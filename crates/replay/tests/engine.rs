@@ -132,7 +132,7 @@ fn a_fresh_keybox_is_installed_and_the_previous_one_kept() {
     // Seed an old keybox so installing a new one keeps the old.
     fs::write(&keybox_path, "old keybox").unwrap();
     let mut engine = Engine::new(layout.clone());
-    let report = engine.install_keybox(TEST_KEYBOX.as_bytes(), Some("test".to_string()), None, KeyboxPolicy::Replace).unwrap();
+    let report = engine.install_keybox(TEST_KEYBOX.as_bytes(), Some("test".to_string()), None, KeyboxPolicy::Replace, false).unwrap();
     assert!(report.changed);
     assert_eq!(report.declined, None);
     // The throwaway keybox has no Google-signed chain, so no key is "usable" (STRONG) — but it is installable (structurally sound).
@@ -144,7 +144,7 @@ fn a_fresh_keybox_is_installed_and_the_previous_one_kept() {
     assert_eq!(report.sha256, Files::sha256(installed.as_bytes()));
     assert_eq!(fs::read_to_string(layout.store().join("previous-keybox.xml")).unwrap(), "old keybox");
     // Installing the same keybox again reports no change.
-    assert!(!engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::Replace).unwrap().changed);
+    assert!(!engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::Replace, false).unwrap().changed);
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -154,16 +154,36 @@ fn a_malformed_keybox_is_installed_as_a_well_formed_one() {
     let layout = Layout::new(&root);
     let mut engine = Engine::new(layout.clone());
     let malformed = malformed_keybox();
-    let report = engine.install_keybox(malformed.as_bytes(), None, None, KeyboxPolicy::NoDowngrade).unwrap();
+    let report = engine.install_keybox(malformed.as_bytes(), None, None, KeyboxPolicy::NoDowngrade, true).unwrap();
     assert!(report.changed);
     assert!(report.verdict.unwrap().defect.is_some());
     let installed = fs::read_to_string(layout.tricky_store().join("keybox.xml")).unwrap();
     assert_eq!(KeyboxDocument::parse(&installed).unwrap().defect, None);
     assert_eq!(key_material(&installed), key_material(TEST_KEYBOX));
     // The same malformed keybox offered again changes nothing and is not declined.
-    let again = engine.install_keybox(malformed.as_bytes(), None, None, KeyboxPolicy::NoDowngrade).unwrap();
+    let again = engine.install_keybox(malformed.as_bytes(), None, None, KeyboxPolicy::NoDowngrade, true).unwrap();
     assert!(!again.changed);
     assert_eq!(again.declined, None);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_malformed_keybox_is_rejected_when_not_lenient() {
+    // The recovery of broken markup is a concession to one mirror, reached with `lenient`, not a
+    // general one. Offered without it, a malformed keybox is an error, so another source's broken
+    // keybox is declined and the next source tried rather than salvaged. The installed keybox is
+    // left untouched.
+    let root = temporary_root();
+    let layout = Layout::new(&root);
+    let keybox_path = layout.tricky_store().join("keybox.xml");
+    fs::write(&keybox_path, TEST_KEYBOX).unwrap();
+    let mut engine = Engine::new(layout.clone());
+    let malformed = malformed_keybox();
+    assert!(engine.install_keybox(malformed.as_bytes(), None, None, KeyboxPolicy::Replace, false).is_err());
+    assert!(engine.inspect_keybox(malformed.as_bytes(), None, false).is_err());
+    // With the concession, the same bytes are read.
+    assert!(engine.inspect_keybox(malformed.as_bytes(), None, true).is_ok());
+    assert_eq!(fs::read_to_string(&keybox_path).unwrap(), TEST_KEYBOX);
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -174,7 +194,7 @@ fn a_malformed_installed_keybox_is_replaced_by_one_of_equal_rank() {
     let keybox_path = layout.tricky_store().join("keybox.xml");
     fs::write(&keybox_path, malformed_keybox()).unwrap();
     let mut engine = Engine::new(layout.clone());
-    let report = engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::NoDowngrade).unwrap();
+    let report = engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::NoDowngrade, false).unwrap();
     assert!(report.changed);
     assert_eq!(report.declined, None);
     let _ = fs::remove_dir_all(&root);
@@ -206,7 +226,7 @@ fn a_keybox_without_a_key_is_rejected_and_the_installed_one_kept() {
     let keybox_path = layout.tricky_store().join("keybox.xml");
     fs::write(&keybox_path, TEST_KEYBOX).unwrap();
     let mut engine = Engine::new(layout.clone());
-    assert!(engine.install_keybox(b"<AndroidAttestation></AndroidAttestation>", None, None, KeyboxPolicy::Replace).is_err());
+    assert!(engine.install_keybox(b"<AndroidAttestation></AndroidAttestation>", None, None, KeyboxPolicy::Replace, false).is_err());
     assert_eq!(fs::read_to_string(&keybox_path).unwrap(), TEST_KEYBOX);
     let _ = fs::remove_dir_all(&root);
 }
@@ -1238,9 +1258,9 @@ fn a_keybox_that_is_needed_is_installed_when_needed() {
     let root = temporary_root();
     let layout = Layout::new(&root);
     let mut engine = Engine::new(layout.clone());
-    engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::Replace).unwrap();
+    engine.install_keybox(TEST_KEYBOX.as_bytes(), None, None, KeyboxPolicy::Replace, false).unwrap();
     let (other, _) = keybox_without_its_ec_key();
-    let report = engine.install_keybox(other.as_bytes(), None, None, KeyboxPolicy::WhenNeeded { margin_seconds: 48 * 3600 }).unwrap();
+    let report = engine.install_keybox(other.as_bytes(), None, None, KeyboxPolicy::WhenNeeded { margin_seconds: 48 * 3600 }, false).unwrap();
     assert_eq!(report.declined, None);
     assert!(report.changed);
     let _ = fs::remove_dir_all(&root);

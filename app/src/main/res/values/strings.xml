@@ -262,8 +262,9 @@
     <string name="settings_unmetered_help">Scheduled refreshes wait for Wi-Fi or another unmetered network.</string>
     <string name="settings_sources">Sources</string>
     <string name="settings_keybox_url">Keybox URL</string>
-    <string name="settings_extra_keybox_urls">More keybox URLs</string>
-    <string name="settings_extra_keybox_urls_help">Tried in order when the keybox URL cannot be downloaded, or serves a keybox worse than the installed one. A keybox is installed only when it is at least as good as the installed one.</string>
+    <string name="settings_keybox_sources">Keybox sources</string>
+    <string name="settings_keybox_lenient">Recover a broken keybox (lenient)</string>
+    <string name="settings_keybox_sources_help">Tried in order until one installs or is kept; a keybox is installed only when it is at least as good as the installed one. A source may serve the keybox as XML, base64, gzip or a zip of one file, detected on its own. Turn on lenient only for a source known to serve broken XML markup: its keys are then recovered from the damaged document. A strict source that serves a broken keybox is skipped.</string>
     <string name="settings_fingerprint_url">Fingerprint URL</string>
     <string name="settings_sources_reset">Use the default sources</string>
     <string name="settings_sources_reset_help">The keybox and fingerprint sources of AlwaysStrong.</string>

@@ -20,6 +20,7 @@ import dev.nercone.replayintegrity.engine.Module
 import dev.nercone.replayintegrity.engine.OutdatedKey
 import dev.nercone.replayintegrity.engine.StatusReport
 import dev.nercone.replayintegrity.net.Downloader
+import dev.nercone.replayintegrity.net.KeyboxSource
 import dev.nercone.replayintegrity.privilege.Privilege
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import dev.nercone.replayintegrity.privilege.PrivilegeException
@@ -130,7 +131,7 @@ class Replay(val context: Context) {
         val problems = mutableListOf<String>()
         val log = mutableListOf<LogLine>()
         val status = statusList()
-        val keybox = if (values.autoKeybox) refreshKeybox(privilege, values.keyboxSources(), values.keyboxPolicy(), status, problems, log) else null
+        val keybox = if (values.autoKeybox) refreshKeybox(privilege, values.orderedKeyboxSources(), values.keyboxPolicy(), status, problems, log) else null
         val fingerprint = if (values.autoFingerprint) {
             attempt("fingerprint", problems) {
                 val fetched = downloader.fingerprint(values.fingerprintUrl)
@@ -165,7 +166,7 @@ class Replay(val context: Context) {
      */
     suspend fun refreshKeybox(
         privilege: Privilege,
-        sources: List<String>,
+        sources: List<KeyboxSource>,
         policy: KeyboxPolicy,
         status: File?,
         problems: MutableList<String>,
@@ -173,11 +174,11 @@ class Replay(val context: Context) {
     ): InstallReport? {
         val failures = mutableListOf<String>()
         var declined: InstallReport? = null
-        for (url in sources) {
-            val report = attempt(url, failures) {
-                val fetched = downloader.keybox(url)
+        for (source in sources) {
+            val report = attempt(source.url, failures) {
+                val fetched = downloader.keybox(source.url)
                 val result = try {
-                    engine.installKeybox(privilege, engine.write(KEYBOX, fetched.bytes), fetched.source, status, policy)
+                    engine.installKeybox(privilege, engine.write(KEYBOX, fetched.bytes), fetched.source, status, policy, source.lenient)
                 } catch (error: EngineException) {
                     log += error.log
                     throw error
@@ -269,7 +270,7 @@ class Replay(val context: Context) {
     /** Checks a keybox the user chose, without installing it. */
     suspend fun inspectKeybox(uri: Uri, name: String): Candidate.Keybox {
         val file = copy(uri, IMPORTED_KEYBOX, MAX_IMPORT_BYTES)
-        return Candidate.Keybox(file, name, engine.inspectKeybox(file, statusList()).value)
+        return Candidate.Keybox(file, name, engine.inspectKeybox(file, statusList(), lenient = false).value)
     }
 
     /** Checks a fingerprint the user chose, without installing it. */
@@ -287,7 +288,7 @@ class Replay(val context: Context) {
         val source = "file:${candidate.name}"
         val values = settings.values.value
         val installed = when (candidate) {
-            is Candidate.Keybox -> engine.installKeybox(privilege, candidate.file, source, statusList(), KeyboxPolicy.Replace)
+            is Candidate.Keybox -> engine.installKeybox(privilege, candidate.file, source, statusList(), KeyboxPolicy.Replace, lenient = false)
             is Candidate.Fingerprint -> engine.installFingerprint(privilege, candidate.file, source, values.engine())
         }
         settings.update {

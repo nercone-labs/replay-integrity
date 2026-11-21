@@ -92,8 +92,13 @@ class Engine(val context: Context) {
     suspend fun status(privilege: Privilege, statusList: File?): EngineResult<StatusReport> =
         run(privilege, listOf("status") + statusArguments(statusList), StatusReport.serializer())
 
-    suspend fun inspectKeybox(file: File, statusList: File?): EngineResult<KeyboxVerdict> =
-        run(listOf("inspect-keybox", file.absolutePath) + statusArguments(statusList), KeyboxVerdict.serializer())
+    /**
+     * Checks a keybox. `lenient` is set only for the one mirror known to serve broken markup
+     * (`KeyboxSource.lenient`); any other keybox is read strictly, so a damaged document is an
+     * error rather than something the engine salvages.
+     */
+    suspend fun inspectKeybox(file: File, statusList: File?, lenient: Boolean): EngineResult<KeyboxVerdict> =
+        run(listOf("inspect-keybox", file.absolutePath) + statusArguments(statusList) + lenientArguments(lenient), KeyboxVerdict.serializer())
 
     suspend fun inspectFingerprint(file: File): EngineResult<FingerprintReport> =
         run(listOf("inspect-fingerprint", file.absolutePath), FingerprintReport.serializer())
@@ -102,8 +107,8 @@ class Engine(val context: Context) {
      * Installs a keybox as `policy` says (`KeyboxPolicy` of the engine). When the policy keeps
      * the installed keybox, the engine says why in `InstallReport.declined`.
      */
-    suspend fun installKeybox(privilege: Privilege, file: File, source: String?, statusList: File?, policy: KeyboxPolicy): EngineResult<InstallReport> {
-        val arguments = listOf("install-keybox", file.absolutePath) + sourceArguments(source) + statusArguments(statusList) + policy.arguments()
+    suspend fun installKeybox(privilege: Privilege, file: File, source: String?, statusList: File?, policy: KeyboxPolicy, lenient: Boolean): EngineResult<InstallReport> {
+        val arguments = listOf("install-keybox", file.absolutePath) + sourceArguments(source) + statusArguments(statusList) + policy.arguments() + lenientArguments(lenient)
         return run(privilege, arguments, InstallReport.serializer())
     }
 
@@ -143,6 +148,8 @@ class Engine(val context: Context) {
     suspend fun removeHook(privilege: Privilege): EngineResult<BootHook> = run(privilege, listOf("hook", "remove"), BootHook.serializer())
 
     fun statusArguments(statusList: File?): List<String> = statusList?.let { listOf("--status", it.absolutePath) } ?: emptyList()
+
+    fun lenientArguments(lenient: Boolean): List<String> = if (lenient) listOf("--lenient") else emptyList()
 
     fun sourceArguments(source: String?): List<String> = source?.let { listOf("--source", it) } ?: emptyList()
 

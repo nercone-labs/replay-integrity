@@ -241,14 +241,25 @@ impl Engine {
         })
     }
 
-    /// Reads a keybox, recovering the keys of one that is not well-formed (`KeyboxDocument::read`).
-    pub fn read_keybox(bytes: &[u8]) -> Result<KeyboxDocument, ReplayError> {
-        Ok(KeyboxDocument::read(&Engine::text(bytes, "keybox")?)?)
+    /// Reads a keybox. With `lenient`, the keys of one that is not well-formed XML are recovered
+    /// from its PEM blocks (`KeyboxDocument::read`); otherwise it must be a well-formed keybox
+    /// (`KeyboxDocument::parse`), and a damaged document is an error.
+    ///
+    /// Recovery is a concession to one known mirror that serves broken markup, not a general
+    /// one. A keybox offered by any other source is read strictly, so a source that serves a
+    /// damaged document is declined and the next source tried, rather than silently salvaged.
+    /// The keybox the engine itself installed is read leniently (it writes a well-formed
+    /// document, but another tool may have overwritten it with a broken one that `repair_keybox`
+    /// then rewrites).
+    pub fn read_keybox(bytes: &[u8], lenient: bool) -> Result<KeyboxDocument, ReplayError> {
+        let text = Engine::text(bytes, "keybox")?;
+        Ok(if lenient { KeyboxDocument::read(&text)? } else { KeyboxDocument::parse(&text)? })
     }
 
-    /// Checks a keybox without installing it.
-    pub fn inspect_keybox(&mut self, bytes: &[u8], status_json: Option<&str>) -> Result<KeyboxVerdict, ReplayError> {
-        let document = Engine::read_keybox(bytes)?;
+    /// Checks a keybox without installing it. `lenient` is passed to `read_keybox`: it is set
+    /// only for the installed keybox and the one mirror known to serve broken markup.
+    pub fn inspect_keybox(&mut self, bytes: &[u8], status_json: Option<&str>, lenient: bool) -> Result<KeyboxVerdict, ReplayError> {
+        let document = Engine::read_keybox(bytes, lenient)?;
         Ok(self.verifier(status_json).check(&document, Engine::now()))
     }
 
@@ -274,8 +285,9 @@ impl Engine {
         source: Option<String>,
         status_json: Option<&str>,
         policy: KeyboxPolicy,
+        lenient: bool,
     ) -> Result<InstallReport, ReplayError> {
-        let document = Engine::read_keybox(bytes)?;
+        let document = Engine::read_keybox(bytes, lenient)?;
         let verifier = self.verifier(status_json);
         let now = Engine::now();
         let verdict = verifier.check(&document, now);
@@ -288,7 +300,7 @@ impl Engine {
         let path = self.config.keybox();
         let current = Files::read_optional(&path)?;
         if policy != KeyboxPolicy::Replace {
-            let installed_document = current.as_deref().and_then(|bytes| Engine::read_keybox(bytes).ok());
+            let installed_document = current.as_deref().and_then(|bytes| Engine::read_keybox(bytes, true).ok());
             let installed = installed_document.as_ref().map(|document| verifier.check(document, now));
             let installed_later = match policy {
                 KeyboxPolicy::WhenNeeded { margin_seconds } => {
@@ -344,7 +356,7 @@ impl Engine {
     pub fn repair_keybox(&mut self) -> Result<bool, ReplayError> {
         let path = self.config.keybox();
         let Some(bytes) = Files::read_optional(&path)? else { return Ok(false) };
-        let document = Engine::read_keybox(&bytes)?;
+        let document = Engine::read_keybox(&bytes, true)?;
         let Some(defect) = &document.defect else { return Ok(false) };
         self.log.warning(format!("the installed keybox is not well-formed ({defect}); it is written again with the keys recovered from it"));
         let rendered = document.render();
@@ -474,7 +486,7 @@ impl Engine {
     /// The installed keybox, if any, read and checked.
     pub fn keybox_verdict(&mut self, status_json: Option<&str>) -> Result<Option<KeyboxVerdict>, ReplayError> {
         match Files::read_optional(&self.config.keybox())? {
-            Some(bytes) => Ok(Some(self.inspect_keybox(&bytes, status_json)?)),
+            Some(bytes) => Ok(Some(self.inspect_keybox(&bytes, status_json, true)?)),
             None => Ok(None),
         }
     }
@@ -483,7 +495,7 @@ impl Engine {
     /// keybox: the signers that a persisted key's chain must match to be current.
     fn keybox_signers(&self) -> Result<Vec<Vec<u8>>, ReplayError> {
         let Some(bytes) = Files::read_optional(&self.config.keybox())? else { return Ok(Vec::new()) };
-        let document = Engine::read_keybox(&bytes)?;
+        let document = Engine::read_keybox(&bytes, true)?;
         Ok(document.keys().filter_map(|key| key.certificates.first().map(|certificate| certificate.der.clone())).collect())
     }
 

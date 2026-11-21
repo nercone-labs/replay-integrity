@@ -262,8 +262,9 @@
     <string name="settings_unmetered_help">定期更新を Wi-Fi などの従量制でないネットワークまで待ちます。</string>
     <string name="settings_sources">取得元</string>
     <string name="settings_keybox_url">キーボックスの URL</string>
-    <string name="settings_extra_keybox_urls">その他のキーボックスの URL</string>
-    <string name="settings_extra_keybox_urls_help">キーボックスの URL からダウンロードできないとき、またはインストール済みのものより劣るキーボックスが配布されているときに、順に試します。インストール済みのもの以上に良いキーボックスだけをインストールします。</string>
+    <string name="settings_keybox_sources">キーボックスの取得元</string>
+    <string name="settings_keybox_lenient">壊れたキーボックスを復元する(寛容モード)</string>
+    <string name="settings_keybox_sources_help">いずれかがインストールされるか維持されるまで、順に試します。インストール済みのもの以上に良いキーボックスだけをインストールします。取得元は、キーボックスを XML・base64・gzip・1 ファイルだけの zip のいずれかで配布でき、形式は自動で判別します。壊れた XML を配布すると分かっている取得元にだけ寛容モードを有効にしてください。壊れた文書からキーを復元します。寛容モードが無効な取得元が壊れたキーボックスを配布した場合は、その取得元を飛ばします。</string>
     <string name="settings_fingerprint_url">フィンガープリントの URL</string>
     <string name="settings_sources_reset">既定の取得元に戻す</string>
     <string name="settings_sources_reset_help">AlwaysStrong と同じキーボックスとフィンガープリントの取得元です。</string>
