@@ -850,3 +850,39 @@ with one fixed name, one writer (the boot hook's, another command's) could delet
 temporary file and rename a partly written one into place. A writer killed between writing and
 renaming leaves its temporary file behind; the next write of the same file removes those of
 processes that no longer run.
+
+## Code shared with TypeFace Droplet
+
+Replay Integrity and TypeFace Droplet are built the same way, and parts of them were written once and copied.
+The copies had drifted apart, each with fixes the other lacked, so they were brought together:
+for every part, the better of the two versions was taken, and both repositories now hold the
+same code. The parts are:
+
+- **`crates/android`**, the whole crate, byte for byte. It holds every Android interface either
+  engine uses: the font service (`FontService`), the keystore (`DeviceKeystore`), watches of
+  files (`FileWatch`) and `/data/system/packages.list` (`PackageList`) as well as the package
+  manager, the activity manager, processes, capabilities and properties. Each engine uses only
+  some of them; the unused ones are left out of the binary by the linker, and one crate
+  for both is simpler to keep equal than two crates that differ by a few modules.
+- **`crates/replay/src/log.rs`**, byte for byte.
+- **The `privilege` package** of the application (`Privilege`, `PrivilegeSelector`,
+  `RootPrivilege`, `ShizukuPrivilege`, `CommandService`, `ProcessRunner` and
+  `ICommandService.aidl`), which differs only in its `package` line.
+- **`ui/Widgets.kt`**, which differs only in its `package` line and its import of `R`. Parts that
+  belong to one application stay out of it (the editor of variation axes is
+  `CustomizeScreen.Axes` in TypeFace Droplet).
+- The shared labels at the top of `ui/Labels` (`privilege`, `privilegeChoice`, `describe`,
+  `rootManager`, `rootManagers`), and the shape of the frame (`Navigator`, `Route`) and of the
+  notice of changes not applied yet (`Notices.Pending`).
+- The build files outside the application's own steps: `build.gradle.kts`, `gradle.properties`,
+  `gradle/libs.versions.toml`, `rustfmt.toml`, and `app/proguard-rules.pro` apart from its package names.
+
+A change to one of these parts is made in both repositories, in the same words. The copies are
+checked with `diff -r crates/android ../typeface-droplet/crates/android`, and with `diff` after
+replacing the package names for the Kotlin files.
+
+Sharing them through a third repository was considered: a Git submodule, or a Cargo Git
+dependency and a published Gradle library. It was set aside for now. Each repository builds on
+its own today, from one checkout, with every Gradle dependency verified
+(`gradle/verification-metadata.xml`); a submodule makes every checkout and the CI depend on a
+second repository, and a published library must be published and verified on every change.

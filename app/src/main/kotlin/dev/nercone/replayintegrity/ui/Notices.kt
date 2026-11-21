@@ -40,7 +40,7 @@ object Notices {
         if (outcome != null) item(key = "outcome") {
             Box(Modifier.padding(bottom = extra)) { Outcome(outcome, onLog = { model.showLog(true) }, onDismiss = model::dismissOutcome) }
         }
-        if (pending(state, settings)) item(key = "pending") { Box(Modifier.padding(bottom = extra)) { Pending(state, model) } }
+        if (pending(state, settings)) item(key = "pending") { Box(Modifier.padding(bottom = extra)) { Pending(state.idle, onApply = model::repair) } }
     }
 
     /** Whether the settings the engine reads changed since they were last applied. */
@@ -50,9 +50,9 @@ object Notices {
     }
 
     @Composable
-    fun Pending(state: UiState, model: AppViewModel) {
+    fun Pending(idle: Boolean, onApply: () -> Unit) {
         Widgets.Notice(Widgets.Tone.INFORMATION, stringResource(R.string.pending_title), stringResource(R.string.pending_text)) {
-            FilledTonalButton(onClick = model::repair, enabled = state.idle) { Text(stringResource(R.string.apply_now)) }
+            FilledTonalButton(onClick = onApply, enabled = idle) { Text(stringResource(R.string.apply_now)) }
         }
     }
 

@@ -2,7 +2,7 @@
 //! Android 17 (API 37), the formats documented by `cmd package help`, and the format of
 //! `/data/system/packages.list` written by `PackageManagerService` (`Settings.writePackageListLPr`).
 
-use android::{Capability, CapabilitySet, ComponentName, ComponentState, PackageList, PackageManager, ProcessCapabilities, ProcessInfo};
+use android::{Capability, CapabilitySet, ComponentName, ComponentState, FontService, PackageList, PackageManager, ProcessCapabilities, ProcessInfo};
 
 #[test]
 fn component_names_expand_relative_classes() {
@@ -75,6 +75,20 @@ fn component_states_are_read_per_user() {
     for state in [ComponentState::Default, ComponentState::Enabled, ComponentState::Disabled] {
         assert_eq!(ComponentState::from_name(state.name()), Some(state));
     }
+}
+
+#[test]
+fn font_dump_paths_are_extracted() {
+    let dump = "Named Family List
+  Named Family (sans-serif)
+    Family
+      style = FontStyle { weight=400, slant=0}, path = /system/fonts/Roboto-Regular.ttf, axes = 'wdth' 100.0, rev=3.015
+Dump Fallback Families
+  Fallback Family [3]: lang=\"und-Ethi\"
+    style = FontStyle { weight=400, slant=0}, path = /system/fonts/NotoSerifEthiopic-VF.ttf, fallback = serif, rev=2.102
+    style = FontStyle { weight=400, slant=0}, path = /system/fonts/Last.ttf
+";
+    assert_eq!(FontService::paths(dump), ["/system/fonts/Roboto-Regular.ttf", "/system/fonts/NotoSerifEthiopic-VF.ttf", "/system/fonts/Last.ttf"]);
 }
 
 #[test]
@@ -240,10 +254,7 @@ fn uids_combine_users_and_application_ids() {
 #[test]
 fn command_lines_split_into_their_arguments() {
     // `/proc/<pid>/cmdline` ends every argument with a NUL.
-    assert_eq!(
-        ProcessInfo::arguments_of(b"/data/adb/replay-integrity/replay\0watch\0--package\0a.b\0"),
-        ["/data/adb/replay-integrity/replay", "watch", "--package", "a.b"]
-    );
+    assert_eq!(ProcessInfo::arguments_of(b"/data/adb/example/engine\0watch\0--package\0a.b\0"), ["/data/adb/example/engine", "watch", "--package", "a.b"]);
     // An empty argument is kept; a process without a command line (a kernel thread) has none.
     assert_eq!(ProcessInfo::arguments_of(b"sh\0\0x\0"), ["sh", "", "x"]);
     assert!(ProcessInfo::arguments_of(b"").is_empty());

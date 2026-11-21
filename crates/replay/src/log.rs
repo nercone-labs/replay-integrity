@@ -35,8 +35,8 @@ pub struct LogLine {
 
 /// The engine log: lines are kept for the command's report and appended to a file,
 /// which is rotated to `<file>.old` when it exceeds `Log::MAX_FILE_SIZE`. The size is checked
-/// before every line, so that a command that runs for a long time (`watch`) cannot grow the
-/// file without bound.
+/// before every line, so that a command that runs for a long time cannot grow the file without
+/// bound.
 pub struct Log {
     file: Option<PathBuf>,
     pub lines: Vec<LogLine>,

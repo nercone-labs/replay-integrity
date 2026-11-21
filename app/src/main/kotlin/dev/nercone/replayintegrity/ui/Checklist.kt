@@ -43,7 +43,7 @@ object Checklist {
     )
 
     @Composable
-    fun Content(status: StatusReport, settings: Settings.Values, onNavigate: (ReplayApp.Destination, SettingsScreen.Page?) -> Unit) {
+    fun Content(status: StatusReport, settings: Settings.Values, navigator: ReplayApp.Navigator) {
         val checks = checks(status, settings)
         Widgets.Section(stringResource(R.string.checklist_title)) {
             checks.forEachIndexed { index, check ->
@@ -54,7 +54,7 @@ object Checklist {
                     supporting = check.supporting,
                     icon = check.icon,
                     trailing = { Icon(icon(check.level), null, tint = tint(check.level)) },
-                    onClick = check.destination?.let { destination -> { onNavigate(destination, check.page) } },
+                    onClick = check.destination?.let { destination -> { navigator.open(destination, check.page) } },
                 )
             }
         }

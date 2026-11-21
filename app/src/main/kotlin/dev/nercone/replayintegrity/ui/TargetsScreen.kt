@@ -122,7 +122,8 @@ object TargetsScreen {
                 label = stringResource(R.string.settings_package),
                 help = stringResource(R.string.targets_extra_help),
                 validate = { PACKAGE.matches(it) },
-                onChange = { list -> model.configure { it.copy(extraPackages = list) } },
+                onAdd = { name -> model.configure { it.copy(extraPackages = (it.extraPackages + name).distinct()) } },
+                onRemove = { name -> model.configure { it.copy(extraPackages = it.extraPackages - name) } },
                 icon = Icons.Default.AddCircleOutline,
             )
             Widgets.StringListItem(
@@ -132,7 +133,8 @@ object TargetsScreen {
                 label = stringResource(R.string.settings_package),
                 help = stringResource(R.string.targets_excluded_help),
                 validate = { PACKAGE.matches(it) && it !in ALWAYS },
-                onChange = { list -> model.configure { it.copy(excludedPackages = list) } },
+                onAdd = { name -> model.configure { it.copy(excludedPackages = (it.excludedPackages + name).distinct()) } },
+                onRemove = { name -> model.configure { it.copy(excludedPackages = it.excludedPackages - name) } },
                 icon = Icons.Default.RemoveCircleOutline,
             )
         }

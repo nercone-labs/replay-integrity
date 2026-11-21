@@ -32,6 +32,15 @@ object Labels {
     )
 
     @Composable
+    fun privilegeChoice(choice: PrivilegeChoice): String = stringResource(
+        when (choice) {
+            PrivilegeChoice.AUTOMATIC -> R.string.settings_privilege_automatic
+            PrivilegeChoice.SHIZUKU -> R.string.settings_privilege_shizuku
+            PrivilegeChoice.ROOT -> R.string.settings_privilege_root
+        },
+    )
+
+    @Composable
     fun describe(status: PrivilegeStatus): String = when (status) {
         is PrivilegeStatus.Available -> stringResource(R.string.privilege_available)
         is PrivilegeStatus.InsufficientUser ->
@@ -131,15 +140,6 @@ object Labels {
     )
 
     @Composable
-    fun privilegeChoice(choice: PrivilegeChoice): String = stringResource(
-        when (choice) {
-            PrivilegeChoice.AUTOMATIC -> R.string.settings_privilege_automatic
-            PrivilegeChoice.SHIZUKU -> R.string.settings_privilege_shizuku
-            PrivilegeChoice.ROOT -> R.string.settings_privilege_root
-        },
-    )
-
-    @Composable
     fun keyboxFormat(format: KeyboxFormat): String = stringResource(
         when (format) {
             KeyboxFormat.AUTO -> R.string.keybox_format_auto
@@ -214,4 +214,21 @@ object Labels {
 
     /** The first characters of a hash, enough to tell files apart. */
     fun shortHash(sha256: String): String = sha256.take(12)
+
+    @Composable
+    fun operation(operation: Operation): String = stringResource(
+        when (operation) {
+            Operation.PREPARING -> R.string.operation_preparing
+            Operation.CHECKING -> R.string.operation_checking
+            Operation.REFRESHING -> R.string.operation_refreshing
+            Operation.REPAIRING -> R.string.operation_repairing
+            Operation.RESTARTING -> R.string.operation_restarting
+            Operation.INSPECTING -> R.string.operation_inspecting
+            Operation.INSTALLING -> R.string.operation_installing
+            Operation.INSTALLING_MODULE -> R.string.operation_installing_module
+            Operation.CONFIGURING_BOOT -> R.string.operation_configuring_boot
+            Operation.DISABLING_CONFLICTS -> R.string.operation_disabling_conflicts
+            Operation.REMOVING_KEY -> R.string.operation_removing_key
+        },
+    )
 }
