@@ -4,12 +4,11 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -29,7 +28,6 @@ class ShizukuPrivilege(val context: Context) : Privilege {
     /** Written by Shizuku's callback on the main thread too, so it is read from any thread. */
     @Volatile
     var service: ICommandService? = null
-    val main = Handler(Looper.getMainLooper())
 
     override val kind: Privilege.Kind
         get() = if (isSui) Privilege.Kind.SUI else Privilege.Kind.SHIZUKU
@@ -133,43 +131,41 @@ class ShizukuPrivilege(val context: Context) : Privilege {
     suspend fun connect(): ICommandService = mutex.withLock {
         service?.takeIf { it.asBinder().pingBinder() }?.let { return it }
         if (status() !is PrivilegeStatus.Available) throw PrivilegeException("Shizuku is not available as root")
-        val connected = withTimeoutOrNull(CONNECT_TIMEOUT_MILLIS) {
-            suspendCancellableCoroutine<ICommandService> { continuation ->
-                val connection = object : ServiceConnection {
-                    override fun onServiceConnected(name: ComponentName, binder: IBinder) {
-                        if (continuation.isActive) continuation.resume(ICommandService.Stub.asInterface(binder))
-                    }
+        val bound = CompletableDeferred<ICommandService>()
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+                bound.complete(ICommandService.Stub.asInterface(binder))
+            }
 
-                    override fun onServiceDisconnected(name: ComponentName) {
-                        service = null
+            override fun onServiceDisconnected(name: ComponentName) {
+                service = null
+            }
+        }
+        var connected: ICommandService? = null
+        try {
+            try {
+                Shizuku.bindUserService(arguments, connection)
+            } catch (error: RuntimeException) {
+                throw PrivilegeException("Shizuku stopped", error)
+            }
+            connected = withTimeoutOrNull(CONNECT_TIMEOUT_MILLIS) { bound.await() }
+        } finally {
+            // A connection that timed out, failed or was cancelled would otherwise stay
+            // registered with Shizuku. Shizuku releases every connection of `arguments` at once,
+            // so it is released before the lock is, and never clears the connection of a later
+            // attempt; on the main thread, where Shizuku also walks its connections.
+            if (connected == null) {
+                withContext(NonCancellable + Dispatchers.Main) {
+                    try {
+                        Shizuku.unbindUserService(arguments, connection, false)
+                    } catch (_: RuntimeException) {
                     }
-                }
-                // A connection that timed out or failed would otherwise stay registered with
-                // Shizuku, and every later attempt would add another one. It is released on the
-                // main thread, where Shizuku also walks its connections, so the two never race.
-                val release = {
-                    main.post {
-                        try {
-                            Shizuku.unbindUserService(arguments, connection, false)
-                        } catch (_: RuntimeException) {
-                        }
-                    }
-                    Unit
-                }
-                // Cancelled before it started (the work was stopped): binding now would register
-                // a connection that nothing releases.
-                if (!continuation.isActive) return@suspendCancellableCoroutine
-                continuation.invokeOnCancellation { release() }
-                try {
-                    Shizuku.bindUserService(arguments, connection)
-                } catch (error: RuntimeException) {
-                    release()
-                    if (continuation.isActive) continuation.resumeWith(Result.failure(PrivilegeException("Shizuku stopped", error)))
                 }
             }
-        } ?: throw PrivilegeException("the Shizuku service did not start")
-        service = connected
-        connected
+        }
+        val service = connected ?: throw PrivilegeException("the Shizuku service did not start")
+        this.service = service
+        service
     }
 
     /** Whether a Shizuku binder may arrive: Sui is present, or the Shizuku application is installed. */

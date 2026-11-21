@@ -7,10 +7,10 @@ plugins {
 }
 
 /**
- * Builds the Rust engine (the `replay` executable) for one Android ABI with Cargo, linking with
- * the LLVM toolchain of the NDK. The executable is packaged as `libreplay.so` so that the
- * package installer extracts it into the native library directory, the one place from which an
- * application may execute its own files.
+ * Builds the Rust engine (the `replay` executable) for one Android ABI with Cargo, linking
+ * with the LLVM toolchain of the NDK. The executable is packaged as `libreplay.so` so that
+ * the package installer extracts it into the native library directory, the one place from
+ * which an application may execute its own files.
  */
 abstract class CargoBuild : DefaultTask() {
     @get:Input abstract val cargo: Property<String>

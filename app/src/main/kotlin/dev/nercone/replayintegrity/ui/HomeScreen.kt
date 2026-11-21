@@ -75,7 +75,7 @@ object HomeScreen {
     }
 
     @Composable
-    fun Content(state: UiState, settings: Settings.Values, model: AppViewModel, onNavigate: (ReplayApp.Destination, SettingsScreen.Page?) -> Unit) {
+    fun Content(state: UiState, settings: Settings.Values, model: AppViewModel, navigator: ReplayApp.Navigator) {
         val condition = condition(state, settings)
         val status = state.status
         Widgets.Screen(maxWidth = 1100.dp) { width ->
@@ -84,12 +84,12 @@ object HomeScreen {
                 Column(verticalArrangement = Arrangement.spacedBy(Widgets.SPACING)) {
                     Verdict(condition, state, settings, model)
                     if (condition == Condition.NO_PRIVILEGE) state.privilege?.let { Setup(it, onGrant = model::grantShizuku, onRecheck = model::recheck) }
-                    Details(state, settings, model, onSettings = { page -> onNavigate(ReplayApp.Destination.SETTINGS, page) })
+                    Details(state, settings, model, onSettings = { page -> navigator.open(ReplayApp.Destination.SETTINGS, page) })
                 }
             }
             val side: @Composable () -> Unit = {
                 Column(verticalArrangement = Arrangement.spacedBy(Widgets.SPACING)) {
-                    if (status != null) Checklist.Content(status, settings, onNavigate)
+                    if (status != null) Checklist.Content(status, settings, navigator)
                     Device(status?.firstApiLevel)
                 }
             }
@@ -147,7 +147,7 @@ object HomeScreen {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(stringResource(title(condition)), style = MaterialTheme.typography.headlineSmall)
                         Text(
-                            state.operation?.let { ReplayApp.operationText(it) } ?: stringResource(description(condition)),
+                            state.operation?.let { Labels.operation(it) } ?: stringResource(description(condition)),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }

@@ -92,6 +92,11 @@ object ReplayApp {
     /** Where the user is: a destination, and the page of the settings when one is open. */
     data class Route(val destination: Destination, val page: SettingsScreen.Page?)
 
+    /** Opens `destination`, at `page` when it is the settings. */
+    fun interface Navigator {
+        fun open(destination: Destination, page: SettingsScreen.Page?)
+    }
+
     /** The window width from which the navigation is a rail at the side. */
     val RAIL_WIDTH = 600.dp
 
@@ -105,14 +110,14 @@ object ReplayApp {
         val route = Route(destination, page.takeIf { destination == Destination.SETTINGS })
         // Choosing a destination opens it at its start (the list of the settings, also when it
         // is chosen again from one of its pages); a shortcut may open a page of the settings.
-        val navigate = { target: Destination, targetPage: SettingsScreen.Page? ->
+        val navigator = Navigator { target, targetPage ->
             page = targetPage.takeIf { target == Destination.SETTINGS }
             destination = target
         }
         // Back leaves a page of the settings first, then returns to the home screen, and only
         // from there leaves the application.
         BackHandler(enabled = route.page != null) { page = null }
-        BackHandler(enabled = route.page == null && destination != Destination.HOME) { navigate(Destination.HOME, null) }
+        BackHandler(enabled = route.page == null && destination != Destination.HOME) { navigator.open(Destination.HOME, null) }
 
         NotificationRequest(state, settings, model)
 
@@ -125,7 +130,7 @@ object ReplayApp {
         val exit = MaterialTheme.motionScheme.fastEffectsSpec<Float>()
 
         Row(Modifier.fillMaxSize()) {
-            if (wide) Rail(destination) { navigate(it, null) }
+            if (wide) Rail(destination) { navigator.open(it, null) }
             Scaffold(
                 modifier = Modifier.weight(1f).nestedScroll(scrollBehavior.nestedScrollConnection),
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
@@ -133,7 +138,7 @@ object ReplayApp {
                     Column {
                         LargeFlexibleTopAppBar(
                             title = { Text(title(route)) },
-                            subtitle = state.operation?.let { { Text(operationText(it)) } },
+                            subtitle = state.operation?.let { { Text(Labels.operation(it)) } },
                             navigationIcon = {
                                 if (route.page != null) {
                                     IconButton(onClick = { page = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) }
@@ -148,7 +153,7 @@ object ReplayApp {
                         if (state.operation != null) LinearWavyProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Widgets.SCREEN_PADDING))
                     }
                 },
-                bottomBar = { if (!wide) Bar(destination) { navigate(it, null) } },
+                bottomBar = { if (!wide) Bar(destination) { navigator.open(it, null) } },
             ) { padding ->
                 AnimatedContent(
                     targetState = route,
@@ -158,7 +163,7 @@ object ReplayApp {
                 ) { shown ->
                     Box(Modifier.fillMaxSize()) {
                         when (shown.destination) {
-                            Destination.HOME -> HomeScreen.Content(state, settings, model, navigate)
+                            Destination.HOME -> HomeScreen.Content(state, settings, model, navigator)
                             Destination.ATTESTATION -> AttestationScreen.Content(state, settings, model)
                             Destination.TARGETS -> TargetsScreen.Content(state, settings, model)
                             Destination.SETTINGS -> SettingsScreen.Content(state, settings, model, shown.page) { page = it }
@@ -250,21 +255,4 @@ object ReplayApp {
             dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.dismiss)) } },
         )
     }
-
-    @Composable
-    fun operationText(operation: Operation): String = stringResource(
-        when (operation) {
-            Operation.PREPARING -> R.string.operation_preparing
-            Operation.CHECKING -> R.string.operation_checking
-            Operation.REFRESHING -> R.string.operation_refreshing
-            Operation.REPAIRING -> R.string.operation_repairing
-            Operation.RESTARTING -> R.string.operation_restarting
-            Operation.INSPECTING -> R.string.operation_inspecting
-            Operation.INSTALLING -> R.string.operation_installing
-            Operation.INSTALLING_MODULE -> R.string.operation_installing_module
-            Operation.CONFIGURING_BOOT -> R.string.operation_configuring_boot
-            Operation.DISABLING_CONFLICTS -> R.string.operation_disabling_conflicts
-            Operation.REMOVING_KEY -> R.string.operation_removing_key
-        },
-    )
 }

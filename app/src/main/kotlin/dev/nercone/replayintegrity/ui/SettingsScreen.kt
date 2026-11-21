@@ -264,7 +264,7 @@ object SettingsScreen {
                 Widgets.Item(count - 1, count, stringResource(R.string.keybox_source_add), null, Icons.Default.Add, onClick = { editing = sources.size })
             }
             Widgets.Section(stringResource(R.string.settings_fingerprint_source), stringResource(R.string.settings_sources_help)) {
-                Widgets.TextItem(0, 2, stringResource(R.string.settings_fingerprint_url), settings.fingerprintUrl, Downloader::isAcceptable, { url -> model.configure { it.copy(fingerprintUrl = url) } }, Icons.Default.Link)
+                Widgets.TextItem(0, 2, stringResource(R.string.settings_fingerprint_url), settings.fingerprintUrl, Downloader::isAcceptable, { url -> model.configure { it.copy(fingerprintUrl = url) } }, Icons.Default.Link, KeyboardType.Uri)
                 Widgets.Item(
                     1, 2,
                     headline = stringResource(R.string.settings_sources_reset),
