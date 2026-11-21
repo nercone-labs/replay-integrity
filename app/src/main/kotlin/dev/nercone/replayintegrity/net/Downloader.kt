@@ -39,7 +39,14 @@ class Downloader {
 
     suspend fun fingerprint(url: String): Fetched = Fetched(fetch(url), url)
 
-    suspend fun statusList(): Fetched = Fetched(fetch(STATUS_LIST_URL), STATUS_LIST_URL)
+    /**
+     * The certificate status list, fetched past the caches in front of it (`uncachedURL`).
+     * Google's edge caches keep a copy for up to a day (`Cache-Control: max-age=86400`) and
+     * ignore `Cache-Control: no-cache` from the client, and different edges hold different
+     * copies, so a plain request may return a list from before the latest revocations. A
+     * revoked keybox then looks usable and is kept for up to a day after it stopped working.
+     */
+    suspend fun statusList(): Fetched = Fetched(fetch(uncachedURL(STATUS_LIST_URL, System.currentTimeMillis())), STATUS_LIST_URL)
 
     /** Downloads a URL into memory, following redirects, with bounded timeouts. */
     suspend fun fetch(url: String): ByteArray = withContext(Dispatchers.IO) {
@@ -82,6 +89,14 @@ class Downloader {
     companion object {
         /** Whether `url` can be downloaded from: an absolute HTTPS URL with a host. */
         fun isAcceptable(url: String): Boolean = runCatching { URL(url) }.getOrNull()?.let { it.protocol == "https" && !it.host.isNullOrEmpty() } == true
+
+        /**
+         * `url` with a query that no earlier request used, so that no cache holds a response
+         * for it (a cache stores a response under its full URL, query included: RFC 9111,
+         * section 2) and the origin is asked. `nonce` makes it unique; the time of the request
+         * is enough, because the list is downloaded at most once in a while.
+         */
+        fun uncachedURL(url: String, nonce: Long): String = url + (if ('?' in url) "&" else "?") + "nocache=" + nonce
 
         /** Whether `bytes` start, after white space and a byte order mark, with `<`. */
         fun looksLikeXML(bytes: ByteArray): Boolean {

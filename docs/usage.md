@@ -188,7 +188,8 @@ installed one:
   it is missing, revoked, untrusted, or about to expire. A working keybox is kept, so the keys made
   with it stay current, and the other sources are not asked. Revocation is seen only with Google's
   certificate status list; while it cannot be downloaded (for up to a week a copy is used), a
-  revoked keybox is replaced only once it expires.
+  revoked keybox is replaced only once it expires. The list is downloaded past Google's edge caches,
+  which otherwise hand out a copy up to a day old and so hide a revocation for that long.
 - **Whenever not worse**: whenever the downloaded keybox is not worse than the installed one, before
   the installed one can leak and be revoked. Every change outdates the keys made with the old one.
 

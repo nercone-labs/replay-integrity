@@ -1,6 +1,8 @@
 package dev.nercone.replayintegrity.net
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -23,5 +25,17 @@ class DownloaderTest {
         assertTrue(Downloader.looksLikeXML("﻿\n  <AndroidAttestation/>".toByteArray()))
         assertFalse(Downloader.looksLikeXML("PD94bWwgdmVyc2lvbj0iMS4wIj8+".toByteArray()))
         assertFalse(Downloader.looksLikeXML(ByteArray(0)))
+    }
+
+    @Test
+    fun anUncachedURLKeepsItsTargetAndDiffersForEachNonce() {
+        val first = Downloader.uncachedURL(Downloader.STATUS_LIST_URL, 1)
+        val second = Downloader.uncachedURL(Downloader.STATUS_LIST_URL, 2)
+        assertNotEquals(first, second)
+        assertTrue(first.startsWith(Downloader.STATUS_LIST_URL + "?"))
+        assertTrue(Downloader.isAcceptable(first))
+        assertEquals(java.net.URL(Downloader.STATUS_LIST_URL).host, java.net.URL(first).host)
+        assertEquals(java.net.URL(Downloader.STATUS_LIST_URL).path, java.net.URL(first).path)
+        assertTrue(Downloader.uncachedURL("https://example.com/a?b=c", 1).startsWith("https://example.com/a?b=c&"))
     }
 }
