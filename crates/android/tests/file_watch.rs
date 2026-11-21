@@ -1,4 +1,6 @@
-//! Tests of `FileWatch` against the kernel's inotify, in a temporary directory.
+//! Tests of `FileWatch` against the kernel's inotify, in a temporary directory. inotify is
+//! Linux's, so they run on Linux and Android only; elsewhere `FileWatch` is `Unsupported`.
+#![cfg(any(target_os = "linux", target_os = "android"))]
 
 use std::fs;
 use std::path::PathBuf;

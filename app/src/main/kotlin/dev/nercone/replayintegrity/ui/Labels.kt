@@ -10,11 +10,12 @@ import dev.nercone.replayintegrity.engine.Component
 import dev.nercone.replayintegrity.engine.KeyCategory
 import dev.nercone.replayintegrity.engine.KeyRemoval
 import dev.nercone.replayintegrity.engine.Problem
-import dev.nercone.replayintegrity.net.KeyboxFormat
 import dev.nercone.replayintegrity.engine.RootManager
 import dev.nercone.replayintegrity.engine.TargetMode
 import dev.nercone.replayintegrity.engine.TargetScope
+import dev.nercone.replayintegrity.net.KeyboxFormat
 import dev.nercone.replayintegrity.privilege.Privilege
+import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import dev.nercone.replayintegrity.privilege.PrivilegeStatus
 import java.text.DateFormat
 import java.util.Date
@@ -109,6 +110,32 @@ object Labels {
         when (replacement) {
             Settings.KeyboxReplacement.WHEN_NEEDED -> R.string.keybox_replacement_when_needed
             Settings.KeyboxReplacement.NO_DOWNGRADE -> R.string.keybox_replacement_no_downgrade
+        },
+    )
+
+    @Composable
+    fun keyboxReplacementHelp(replacement: Settings.KeyboxReplacement): String = stringResource(
+        when (replacement) {
+            Settings.KeyboxReplacement.WHEN_NEEDED -> R.string.settings_keybox_replacement_when_needed_help
+            Settings.KeyboxReplacement.NO_DOWNGRADE -> R.string.settings_keybox_replacement_no_downgrade_help
+        },
+    )
+
+    @Composable
+    fun keyRemovalHelp(removal: KeyRemoval): String = stringResource(
+        when (removal) {
+            KeyRemoval.NEVER -> R.string.key_removal_never_help
+            KeyRemoval.WHEN_UNUSABLE -> R.string.key_removal_when_unusable_help
+            KeyRemoval.WHEN_REPLACED -> R.string.key_removal_when_replaced_help
+        },
+    )
+
+    @Composable
+    fun privilegeChoice(choice: PrivilegeChoice): String = stringResource(
+        when (choice) {
+            PrivilegeChoice.AUTOMATIC -> R.string.settings_privilege_automatic
+            PrivilegeChoice.SHIZUKU -> R.string.settings_privilege_shizuku
+            PrivilegeChoice.ROOT -> R.string.settings_privilege_root
         },
     )
 

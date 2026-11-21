@@ -18,8 +18,6 @@ import dev.nercone.replayintegrity.engine.LogLine
 import dev.nercone.replayintegrity.engine.Module
 import dev.nercone.replayintegrity.engine.OutdatedKey
 import dev.nercone.replayintegrity.engine.StatusReport
-import dev.nercone.replayintegrity.engine.TargetMode
-import dev.nercone.replayintegrity.engine.TargetScope
 import dev.nercone.replayintegrity.net.Downloader
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import dev.nercone.replayintegrity.privilege.PrivilegeSelection
@@ -47,6 +45,13 @@ sealed interface Outcome {
     /** `kind` is the kind of the engine error, such as `restricted`, or `null` for other errors. */
     data class Failed(val text: String, val kind: String?) : Outcome {
         val restricted: Boolean get() = kind == EngineException.RESTRICTED
+
+        companion object {
+            fun of(error: Exception): Failed = when (error) {
+                is EngineException -> Failed(error.message.orEmpty(), error.kind)
+                else -> Failed(error.message ?: error.toString(), null)
+            }
+        }
     }
 }
 
@@ -58,18 +63,26 @@ data class UiState(
     val operation: Operation? = null,
     val privilege: PrivilegeSelection? = null,
     val status: StatusReport? = null,
+    /** Why the state of the device could not be read last, while a privilege is available. */
+    val statusError: Outcome.Failed? = null,
     val outcome: Outcome? = null,
     val log: List<LogLine> = emptyList(),
+    /** Whether the engine log is shown. */
+    val logShown: Boolean = false,
     /** A file the user chose, checked and waiting for the user to install it. */
     val candidate: Replay.Candidate? = null,
     /** The installed applications, once loaded, by package. */
     val apps: Map<String, InstalledApp>? = null,
-)
+) {
+    /** Whether an operation that needs root can be started now. */
+    val idle: Boolean get() = ready && operation == null && privilege?.privilege != null
+}
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     val replay: Replay = (application as ReplayApplication).replay
     val settings: StateFlow<Settings.Values> = replay.settings.values
     val state = MutableStateFlow(UiState())
+    private var loadingApps = false
 
     init {
         RefreshWorker.schedule(application, settings.value, replace = false)
@@ -82,7 +95,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Runs `block` as `operation`, unless another operation runs; failures become the outcome. */
+    /**
+     * Runs `block` as `operation`, unless another operation runs. A failure becomes the outcome,
+     * with the engine log of the attempt, and the state of the device is read again: an
+     * operation that failed half-way may have changed it, and the screen must not show the state
+     * from before.
+     */
     fun run(operation: Operation, block: suspend () -> Unit) {
         if (state.value.operation != null && operation != Operation.PREPARING) return
         state.update { it.copy(operation = operation, outcome = null) }
@@ -91,10 +109,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 block()
             } catch (error: CancellationException) {
                 throw error
-            } catch (error: EngineException) {
-                state.update { it.copy(outcome = Outcome.Failed(error.message.orEmpty(), error.kind), log = error.log) }
             } catch (error: Exception) {
-                state.update { it.copy(outcome = Outcome.Failed(error.message ?: error.toString(), null)) }
+                val log = (error as? EngineException)?.log.orEmpty()
+                state.update { it.copy(outcome = Outcome.Failed.of(error), log = log) }
+                // Checking the device and a file change nothing on it, so nothing is read again.
+                if (operation !in UNCHANGING) {
+                    try {
+                        check()
+                    } catch (again: CancellationException) {
+                        throw again
+                    } catch (_: Exception) {
+                        // The failure of the operation is what the user is told; a reading
+                        // that fails as well must not end the application.
+                    }
+                }
             } finally {
                 state.update { it.copy(operation = null) }
             }
@@ -103,17 +131,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Reads the privilege and the device. With `interactive`, a missing permission is asked for
-     * while the user is here; after an operation, no dialog is shown.
+     * while the user is here; after an operation, no dialog is shown. A failure to read the
+     * device is kept apart from the outcome of the operation, which stays as it was, except for
+     * a restricted root, which the frame explains with a dialog of its own. The engine log of
+     * the failed reading becomes the log, so that the user can read why.
      */
     suspend fun check(interactive: Boolean = false) {
         val selection = replay.selectPrivilege(interactive)
         state.update { it.copy(privilege = selection) }
-        if (selection.privilege == null) {
-            state.update { it.copy(status = null) }
+        val privilege = selection.privilege
+        if (privilege == null) {
+            state.update { it.copy(status = null, statusError = null) }
             return
         }
-        val status = replay.status()
-        state.update { it.copy(status = status.value) }
+        try {
+            val status = replay.status(privilege)
+            state.update { it.copy(status = status.value, statusError = null) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            val failure = Outcome.Failed.of(error)
+            state.update {
+                it.copy(
+                    status = null,
+                    statusError = failure,
+                    outcome = if (failure.restricted) failure else it.outcome,
+                    log = (error as? EngineException)?.log ?: it.log,
+                )
+            }
+        }
     }
 
     fun recheck() = run(Operation.CHECKING) { check(interactive = true) }
@@ -124,31 +170,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         check()
     }
 
+    /** Ends an operation that the user started: tells its outcome, with its log, and reads the device again. */
+    suspend fun finish(outcome: Outcome?, log: List<LogLine>) {
+        state.update { it.copy(outcome = outcome ?: it.outcome, log = log) }
+        check()
+    }
+
     fun refresh() = run(Operation.REFRESHING) {
         val refreshed = replay.refresh()
-        state.update { it.copy(outcome = Outcome.Refreshed(refreshed), log = refreshed.log) }
-        check()
+        finish(Outcome.Refreshed(refreshed), refreshed.log)
     }
 
     fun repair() = run(Operation.REPAIRING) {
         val repaired = replay.repair(restart = settings.value.restartOnChange)
-        state.update { it.copy(outcome = Outcome.Repaired(repaired), log = repaired.log) }
-        check()
+        finish(Outcome.Repaired(repaired), repaired.log)
     }
 
     fun restart() = run(Operation.RESTARTING) {
         val result = replay.restart()
-        state.update { it.copy(outcome = Outcome.Restarted(result.value), log = result.log) }
-        check()
+        finish(Outcome.Restarted(result.value), result.log)
     }
 
-    /** The name the provider gives `uri`, or its last path segment. */
-    fun displayName(uri: Uri): String {
+    /** The name the provider gives `uri`, or its last path segment. A provider may be slow, so it is asked off the main thread. */
+    suspend fun displayName(uri: Uri): String = withContext(Dispatchers.IO) {
         val resolver = getApplication<Application>().contentResolver
         val name = runCatching {
             resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
         }.getOrNull()
-        return name ?: uri.lastPathSegment.orEmpty()
+        name ?: uri.lastPathSegment.orEmpty()
     }
 
     fun inspectKeybox(uri: Uri) = run(Operation.INSPECTING) {
@@ -162,61 +211,62 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun install(candidate: Replay.Candidate) = run(Operation.INSTALLING) {
         state.update { it.copy(candidate = null) }
         val repaired = replay.install(candidate)
-        state.update { it.copy(outcome = Outcome.Installed(repaired), log = repaired.log) }
-        check()
+        finish(Outcome.Installed(repaired), repaired.log)
     }
 
     fun dismissCandidate() = state.update { it.copy(candidate = null) }
 
     fun installModule(component: Component, uri: Uri) = run(Operation.INSTALLING_MODULE) {
         val result = replay.installModule(component, uri)
-        state.update { it.copy(outcome = Outcome.ModuleInstalled(result.value), log = result.log) }
-        check()
+        finish(Outcome.ModuleInstalled(result.value), result.log)
     }
 
     fun disableConflicts() = run(Operation.DISABLING_CONFLICTS) {
         val result = replay.disableConflicts()
-        state.update { it.copy(outcome = Outcome.ConflictsDisabled(result.value), log = result.log) }
-        check()
+        finish(Outcome.ConflictsDisabled(result.value), result.log)
     }
 
     /** Removes an outdated key that the settings keep; the user confirmed losing what was enrolled with it. */
     fun removeKey(key: OutdatedKey) = run(Operation.REMOVING_KEY) {
         val result = replay.removeKey(key)
-        state.update { it.copy(outcome = Outcome.KeyRemoved(result.value), log = result.log) }
-        check()
+        finish(Outcome.KeyRemoved(result.value), result.log)
     }
 
     /** Loads the installed applications once, for the labels of the target list. */
     fun loadApps() {
-        if (state.value.apps != null) return
+        if (state.value.apps != null || loadingApps) return
+        loadingApps = true
         viewModelScope.launch {
-            val apps = withContext(Dispatchers.IO) {
-                val manager = getApplication<Application>().packageManager
-                runCatching { manager.getInstalledApplications(0) }.getOrDefault(emptyList()).associate { info ->
-                    val label = runCatching { manager.getApplicationLabel(info).toString() }.getOrDefault(info.packageName)
-                    info.packageName to InstalledApp(info.packageName, label, info.flags and ApplicationInfo.FLAG_SYSTEM != 0)
+            try {
+                val apps = withContext(Dispatchers.IO) {
+                    val manager = getApplication<Application>().packageManager
+                    runCatching { manager.getInstalledApplications(0) }.getOrDefault(emptyList()).associate { info ->
+                        val label = runCatching { manager.getApplicationLabel(info).toString() }.getOrDefault(info.packageName)
+                        info.packageName to InstalledApp(info.packageName, label, info.flags and ApplicationInfo.FLAG_SYSTEM != 0)
+                    }
                 }
+                state.update { it.copy(apps = apps) }
+            } finally {
+                loadingApps = false
             }
-            state.update { it.copy(apps = apps) }
         }
     }
 
+    /** Changes the privilege choice and reads the device with it; refused while an operation runs, which would keep the old reading. */
     fun setPrivilegeChoice(choice: PrivilegeChoice) {
+        if (state.value.operation != null) return
         replay.settings.update { it.copy(privilege = choice, permissionDeclined = false) }
         recheck()
     }
 
     fun setBootHook(enabled: Boolean) = run(Operation.CONFIGURING_BOOT) {
         val result = replay.setBootHook(enabled)
-        state.update { it.copy(log = result.log) }
-        check()
+        finish(null, result.log)
     }
 
     fun setWatchPackages(enabled: Boolean) = run(Operation.CONFIGURING_BOOT) {
         val result = replay.setWatchPackages(enabled)
-        state.update { it.copy(log = result.log) }
-        check()
+        finish(null, result.log)
     }
 
     /** Changes settings that touch no system state; the schedule follows them. */
@@ -229,14 +279,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setTargetMode(mode: TargetMode) = configure { it.copy(targetMode = mode) }
-
-    fun setTargetScope(scope: TargetScope) = configure { it.copy(targetScope = scope) }
-
     /** Sets every setting of `protection`; the user can adjust each one afterwards. */
     fun setProtection(protection: Protection) = configure { protection.applyTo(it) }
-
-    fun setPlayTargetMode(mode: TargetMode) = configure { it.copy(playTargetMode = mode) }
 
     /** Sets the spoof flag `key` to `value`, or to its recommended value with `null`. */
     fun setSpoof(key: String, value: Boolean?) = configure { it.copy(spoofOverrides = if (value == null) it.spoofOverrides - key else it.spoofOverrides + (key to value)) }
@@ -249,10 +293,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissOutcome() = state.update { it.copy(outcome = null) }
 
+    fun showLog(shown: Boolean) = state.update { it.copy(logShown = shown) }
+
     /** Shows `text` as a failure that happened outside an operation. */
     fun fail(text: String) = state.update { it.copy(outcome = Outcome.Failed(text, null)) }
 
     companion object {
         const val SHIZUKU_BINDER_TIMEOUT_MILLIS = 2_000L
+
+        /** The operations that change nothing on the device. */
+        val UNCHANGING = setOf(Operation.PREPARING, Operation.CHECKING, Operation.INSPECTING)
     }
 }

@@ -29,10 +29,25 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
    and installs them, writes the attestation target list, the security patch and the spoof flags,
    restarts the keystore, and installs the boot hook. No reboot is needed.
 
+## Finding your way
+
+The app has four places: **Home**, **Attestation**, **Targets** and **Settings**, in a bar at the
+bottom of the screen, or in a rail at its side when the window is wide (a tablet, a foldable
+opened, landscape). Settings is a list of pages (Protection, Refresh, Sources, Applying and boot,
+Privilege, Notifications, About), each with a summary of what it is set to; **Back** leaves a page,
+then returns to Home.
+
+Every screen starts with the same two notices when they apply: the outcome of the last operation
+(with its **Log** and **Dismiss**), and **Changes not applied yet** with **Apply now** when targets,
+spoof flags or key settings changed since they were last applied. A choice among several values
+(a target mode, a refresh interval, when a key is removed) is a list item that shows the current
+value; tapping it opens the options, each with what it does.
+
 ## The Home screen
 
 - The **verdict** at the top: ready for STRONG, needs attention, not set up, or why the app cannot
-  act (no root, restricted root).
+  act (no root, restricted root, or the state of the device could not be read, with **Check
+  again**). The actions are in it.
 - **Refresh** downloads fresh inputs and applies them. **Repair** re-applies everything and removes
   the outdated keys that the settings allow (see "Outdated keys" below) without downloading. A key
   is deleted through the keystore, as the app that owns it, together with a key of the device's own
@@ -44,9 +59,10 @@ driving two modules: TEESimulator-RS (key attestation) and PlayIntegrityFork (bu
 - The **checklist**: both modules, Zygisk, the keybox (a usable EC key, revocation, expiry, and
   whether the keystore can read the file), the fingerprint (model, patch, expiry), the spoof flags (and whether another script
   rewrote them), the per-app keys (how many were made with an old keybox or security patch), the keystore daemon,
-  conflicting modules, and what runs at boot. Tap an item to see its details.
-- **Details**: the privilege in use, the root manager, the last refresh and its problems, the last
-  apply, and the engine log of the last operation.
+  conflicting modules, and what runs at boot. Items that keep STRONG away come first. Tap an item
+  to see its details. In a wide window the checklist stands beside the verdict.
+- **Details**: the privilege in use and the root manager, the last refresh and its problems, the
+  last apply, and the engine log of the last operation.
 - **This device**: the real model, Android version, security patch, first API level (unknown
   when the device does not report it) and build fingerprint.
 
@@ -88,7 +104,7 @@ again, and it holds nothing of yours, so keeping it would cost STRONG for nothin
 
 TEESimulator-RS keeps the keys it made for each application with the certificate chain of the
 keybox in use at the time. When the keybox changes, those keys keep the old chain: they are
-**outdated**. Each kind of key has its own setting (**Settings → Outdated keys**):
+**outdated**. Each kind of key has its own setting (**Settings → Protection → Outdated keys**):
 
 - **Never**: the key is kept. It keeps working as long as its old keybox is valid.
 - **When unusable**: the key is removed once its old chain is known to fail: revoked (seen with
@@ -120,7 +136,8 @@ again.
   entry commented out with `//` stays commented out.
 - Importing a file turns off the automatic refresh of that file, so that it is kept.
 - **Spoof flags**: each flag can be left at its recommended value, or forced on or off. The value
-  applied and the value the module reads now are shown; a red value was changed by another script.
+  applied and the value the module reads now are shown; a warning sign marks a flag that another
+  script changed.
 - **Outdated keys**: the keys made with a keybox or security patch that is no longer configured,
   whether the next repair removes them, and a **Remove** button for those the settings keep (see
   "Outdated keys" above).
@@ -135,6 +152,8 @@ again.
 
 The applications whose keys TEESimulator-RS attests (`target.txt`). Google Play services, its
 framework and the Play Store are always targets; Xposed managers are always left out.
+
+The rules come first, each showing its value; the list of targets, with a search, follows.
 
 - **Targets**: which installed applications are added automatically: Google Play only, Google
   Play and wallet applications, or all applications (every third-party application and the
@@ -155,7 +174,7 @@ framework and the Play Store are always targets; Xposed managers are always left
 Changes to targets and spoof flags take effect when they are applied; the app shows a notice with
 **Apply now** until then.
 
-With **Add new apps at once** (Settings, Boot), an application installed while the system runs is
+With **Add new apps at once** (Settings → Applying and boot), an application installed while the system runs is
 added to `target.txt` within seconds, with the settings applied last; one removed is taken out.
 Without it, the list follows the installed applications at the next refresh or repair.
 
@@ -166,13 +185,13 @@ Without it, the list follows the installed applications at the next refresh or r
 - **Refresh**: whether the keybox and the fingerprint are refreshed, when a downloaded keybox
   replaces the installed one (below), the interval of the scheduled refresh (off, 3, 6, 12 or 24
   hours), and whether it waits for an unmetered network.
-- **Sources**: the HTTPS URLs of the keybox and the fingerprint, and further keybox URLs tried in
-  order when the first cannot be downloaded or serves a worse keybox. The keybox may be served as
-  XML or base64 of it. Everything downloaded is checked by the engine before it is installed.
-- **Applying**: whether a change restarts the keystore and ends the Play processes at once,
-  whether a restart also ends every background application (so that other targets ask for their
-  keys again at once), and a button that restarts them now.
-- **Boot**: the boot hook (the root manager runs the engine before the keystore daemon starts),
+- **Sources**: the keybox sources, tried in order when one cannot be downloaded or serves a worse
+  keybox (tap one to edit its URL, format and leniency, or to remove it; **Add a keybox source**
+  adds one at the end), and the HTTPS URL of the fingerprint. Everything downloaded is checked by
+  the engine before it is installed.
+- **Applying and boot**: whether a change restarts the keystore and ends the Play processes at
+  once, whether a restart also ends every background application (so that other targets ask for
+  their keys again at once), and a button that restarts them now; then the boot hook (the root manager runs the engine before the keystore daemon starts),
   **Add new apps at once** (the boot hook also runs the package watcher, which updates the target
   list when an application is installed or removed; it needs the boot hook), and the repair the
   app runs once the system has started.

@@ -287,6 +287,9 @@ impl Engine {
         policy: KeyboxPolicy,
         lenient: bool,
     ) -> Result<InstallReport, ReplayError> {
+        // Held against a concurrent `apply`, whose repair of a malformed keybox would otherwise
+        // write the old keys over the one installed here.
+        let _lock = self.store.lock_apply()?;
         let document = Engine::read_keybox(bytes, lenient)?;
         let verifier = self.verifier(status_json);
         let now = Engine::now();
@@ -376,6 +379,9 @@ impl Engine {
     /// checking it has no problems. It is kept in the store in the prop format, and written with the spoof flags of `settings` and its security patch where
     /// PlayIntegrityFork and TEESimulator-RS read them.
     pub fn install_fingerprint(&mut self, bytes: &[u8], source: Option<String>, settings: &Settings) -> Result<InstallReport, ReplayError> {
+        // Held against a concurrent `apply`, which would otherwise write the files of the
+        // previous fingerprint over those written here.
+        let _lock = self.store.lock_apply()?;
         let fingerprint = Fingerprint::read(&Engine::text(bytes, "fingerprint")?)?;
         let report = fingerprint.report(Engine::now().seconds);
         if !report.problems.is_empty() {
@@ -493,9 +499,15 @@ impl Engine {
 
     /// The certificates that sign the first-level certificate of each key of the installed
     /// keybox: the signers that a persisted key's chain must match to be current.
+    ///
+    /// A keybox that cannot be read even leniently (not UTF-8, no key recoverable) gives no
+    /// signers, as a missing one does: no key can be judged against it. It must not fail the
+    /// caller, because `apply` and the boot hook would then stop half-way on every run, with
+    /// the target list and the spoof flags written but nothing restarted and nothing recorded,
+    /// for as long as such a file stays. `apply` and `status` warn of the unreadable keybox.
     fn keybox_signers(&self) -> Result<Vec<Vec<u8>>, ReplayError> {
         let Some(bytes) = Files::read_optional(&self.config.keybox())? else { return Ok(Vec::new()) };
-        let document = Engine::read_keybox(&bytes, true)?;
+        let Ok(document) = Engine::read_keybox(&bytes, true) else { return Ok(Vec::new()) };
         Ok(document.keys().filter_map(|key| key.certificates.first().map(|certificate| certificate.der.clone())).collect())
     }
 

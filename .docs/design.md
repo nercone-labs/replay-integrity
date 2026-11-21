@@ -653,6 +653,72 @@ release.
 - **File pickers.** A ROM without a documents application has no activity for `OpenDocument`; the
   application now says so instead of ending.
 
+## The user interface
+
+The screens were laid out again once the settings had grown to some thirty choices on one page
+and the target rules pushed the target list below the fold.
+
+- **Settings is a list of pages**, one concern each (`SettingsScreen.Page`), each listed with a
+  summary of its values. One long page made the protection presets, the key removal, the
+  sources and the boot hook hard to find and easy to change by a stray scroll. Navigation is
+  plain state in `ReplayApp` (a destination and an optional page, saved across configuration
+  changes) with `BackHandler`; `navigation-compose` was not added, because four destinations and
+  one level of pages do not need it and every dependency must be verified
+  (`gradle/verification-metadata.xml`).
+- **A choice of several values is a list item that opens a dialog** (`Widgets.ChoiceItem`), with
+  the meaning of each option under it. Segmented buttons were used before; with five options
+  (the refresh interval) or longer translated labels they did not fit a phone,
+  and they left no room to say what each option does.
+- **The notices are the same on every screen** (`Notices`): the outcome of the last operation and
+  the "changes not applied yet" notice. Before, the outcome was shown on the home screen only,
+  and elsewhere a failure became a snackbar and a success was not shown at all until the user
+  went home; a change made on the targets screen said it was pending there, but one made in the
+  settings did not.
+- **Wide windows** get a navigation rail instead of the bar (from 600 dp) and centre the content
+  at a readable width; the home screen puts the checklist beside the verdict from 840 dp. The
+  window size is read from `LocalWindowInfo`, again without the adaptive library.
+- **A status that cannot be read is a state of its own** (`HomeScreen.Condition.UNREADABLE`).
+  Before, a failed `status` left the status empty, which the home screen took for "still
+  checking": it showed a spinner and "Checking" for ever, and the failure replaced the outcome of
+  the operation that had just succeeded. The failure is now kept apart (`UiState.statusError`),
+  the verdict says the device could not be read and offers **Check again**, the engine log of the
+  failed reading becomes the log, and the outcome stays. A reading refused for a restricted root
+  is the one exception: it also becomes the outcome, so that the frame's dialog explains how to
+  grant full root, as it did before.
+- **After a failed operation the device is read again.** An operation can fail half-way (a refresh
+  that installed a keybox and then failed to apply); the screens showed the state from before it
+  until the next check. Checking a chosen file changes nothing and is not followed by a reading.
+- **Shortcuts open the page they are about**: the boot item of the checklist opens "Applying and
+  boot", the privilege and refresh details open their pages. Choosing Settings in the navigation
+  always opens its list, also from one of its pages.
+- **No input or output on the main thread**: the name of a chosen file is asked of its provider
+  (which may be a slow cloud provider) and the engine directory is created off the main thread.
+- **One privilege probe per check.** `check` selected the privilege, then `Replay.status` selected
+  it again, running `su -c id -u` (or a Shizuku query) twice for every reading of the device.
+
+## Robustness of the engine
+
+- **An unreadable installed keybox no longer stops `apply`.** `apply` caught a keybox it could not
+  read (not UTF-8, no key recoverable even leniently) and kept it, but the judging of persisted
+  keys then read it again and failed, so every `apply` and every boot hook stopped half-way: the
+  target list and the spoof flags written, nothing restarted, `applied_at` not recorded. Such a
+  keybox now gives no signers, as a missing one does, so no key is judged outdated against it.
+  `status` and `apply` still warn of it.
+- **`install-keybox` and `install-fingerprint` take the apply lock.** Only the app's own mutex kept
+  them apart from `apply`; another process running the engine (the boot hook, the package
+  watcher, a second copy of the app, a manual run) could have an `apply` write the old keys or the
+  old fingerprint's files over those just installed.
+- **The package watcher gets its own session.** It was started as the leader of a process group of
+  its own, and `setsid`, which `detach` calls, refuses a process-group leader, so it stayed in the
+  session of the `su` that started it. The group is no longer made: the session makes one.
+- **Tests that need Linux run only there.** The inotify and `flock` tests ran on every host and
+  failed on macOS, where the engine is developed but never runs; they still run in CI on Linux.
+
+Not changed, but known: removing the service script by hand does not stop a running watcher until
+the package list next changes (`hook remove` and `--no-watch` do stop it), and a keystore daemon
+that does not come back within the restart timeout fails the whole `apply`, although the
+configuration was already written.
+
 ## Information the app does not take from the engine
 
 The device's own model, Android version, security patch and build fingerprint come from

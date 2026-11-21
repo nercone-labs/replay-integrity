@@ -95,7 +95,7 @@ class Replay(val context: Context) {
      * one, `null`, and the engine reports that revocation was not checked.
      */
     suspend fun statusList(): File? = statusListLock.withLock {
-        val file = File(engine.directory, STATUS_LIST)
+        val file = withContext(Dispatchers.IO) { File(engine.directory(), STATUS_LIST) }
         val age = withContext(Dispatchers.IO) { if (file.isFile) System.currentTimeMillis() - file.lastModified() else Long.MAX_VALUE }
         if (age in 0 until STATUS_LIST_MAX_AGE_MILLIS) return@withLock file
         try {
@@ -112,11 +112,14 @@ class Replay(val context: Context) {
      */
     suspend fun cachedStatusList(): File? = statusListLock.withLock {
         withContext(Dispatchers.IO) {
-            File(engine.directory, STATUS_LIST).takeIf { it.isFile && System.currentTimeMillis() - it.lastModified() in 0 until STATUS_LIST_STALE_MILLIS }
+            File(engine.directory(), STATUS_LIST).takeIf { it.isFile && System.currentTimeMillis() - it.lastModified() in 0 until STATUS_LIST_STALE_MILLIS }
         }
     }
 
-    suspend fun status(): EngineResult<StatusReport> = engine.status(privilege(), statusList())
+    suspend fun status(): EngineResult<StatusReport> = status(privilege())
+
+    /** The state of the device, read with `privilege` that the caller already selected. */
+    suspend fun status(privilege: Privilege): EngineResult<StatusReport> = engine.status(privilege, statusList())
 
     /**
      * Downloads the keybox and the fingerprint (each unless the user keeps their own), installs
@@ -145,7 +148,16 @@ class Replay(val context: Context) {
         // the first apply. A scheduled run on an unchanged device then re-applies quietly.
         val changed = keybox?.changed == true || fingerprint?.changed == true
         val restart = values.restartOnChange && (changed || !values.applied)
-        val apply = engine.apply(privilege, values.engine(), restart, status).also { log += it.log }.value
+        val apply = try {
+            engine.apply(privilege, values.engine(), restart, status).also { log += it.log }.value
+        } catch (error: Exception) {
+            // The refresh failed as a whole; it is recorded as such, so that the home screen
+            // does not show the previous successful refresh as the last one.
+            if (error !is kotlinx.coroutines.CancellationException) {
+                settings.update { it.copy(lastRefreshAt = System.currentTimeMillis(), lastRefreshProblems = problems + "apply: ${error.message ?: error}") }
+            }
+            throw error
+        }
         settings.update { it.copy(applied = true) }
         val hook = attempt("boot hook", problems) { synchronizeHook(privilege).also { log += it.log }.value }
         settings.update { it.copy(lastRefreshAt = System.currentTimeMillis(), lastRefreshProblems = problems) }
@@ -287,8 +299,9 @@ class Replay(val context: Context) {
         val privilege = privilege()
         val source = "file:${candidate.name}"
         val values = settings.values.value
+        val status = statusList()
         val installed = when (candidate) {
-            is Candidate.Keybox -> engine.installKeybox(privilege, candidate.file, source, statusList(), KeyboxPolicy.Replace, lenient = false)
+            is Candidate.Keybox -> engine.installKeybox(privilege, candidate.file, source, status, KeyboxPolicy.Replace, lenient = false)
             is Candidate.Fingerprint -> engine.installFingerprint(privilege, candidate.file, source, values.engine())
         }
         settings.update {
@@ -297,7 +310,7 @@ class Replay(val context: Context) {
                 is Candidate.Fingerprint -> it.copy(autoFingerprint = false, applied = true)
             }
         }
-        val applied = engine.apply(privilege, values.engine(), values.restartOnChange && installed.value.changed, statusList())
+        val applied = engine.apply(privilege, values.engine(), values.restartOnChange && installed.value.changed, status)
         Repaired(applied.value, applied.value.daemonRestarted, installed.log + applied.log)
     }
 

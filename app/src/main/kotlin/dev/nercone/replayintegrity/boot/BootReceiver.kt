@@ -8,6 +8,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
+import dev.nercone.replayintegrity.ReplayApplication
 import dev.nercone.replayintegrity.config.Settings
 import java.util.concurrent.TimeUnit
 
@@ -26,7 +27,7 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     fun booted(context: Context) {
-        val settings = Settings(context).values.value
+        val settings = settingsOf(context)
         RefreshWorker.schedule(context, settings, replace = false)
         if (!settings.repairAfterBoot || !settings.applied) return
         val request = OneTimeWorkRequestBuilder<RepairWorker>()
@@ -37,12 +38,19 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     /**
+     * The settings of the running application: a receiver runs in its process, after
+     * `ReplayApplication.onCreate`, so the one instance that every part writes is read, never a
+     * second copy that could miss a write of the first.
+     */
+    fun settingsOf(context: Context): Settings.Values = (context.applicationContext as ReplayApplication).replay.settings.values.value
+
+    /**
      * After an update of the application, the boot hook still runs the copy of the previous
      * engine in the store, and so does the package watcher, until the hook is installed again.
      * That is done now rather than at the next refresh, which may be hours away or turned off.
      */
     fun updated(context: Context) {
-        val settings = Settings(context).values.value
+        val settings = settingsOf(context)
         if (!settings.applied) return
         val request = OneTimeWorkRequestBuilder<HookWorker>()
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES)
