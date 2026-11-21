@@ -22,12 +22,30 @@ data class Fetched(val bytes: ByteArray, val source: String)
  * `lenient` turns on the recovery of a keybox from broken XML markup (`--lenient` of the engine).
  * It is a setting of each source, off by default, so a source is read strictly unless the user —
  * or the default seed, for the one mirror known to need it — turns it on. A strict source whose
- * keybox is damaged is declined and the next source tried, rather than silently salvaged. The
- * container the keybox is served in (XML, base64, gzip, a zip of one file) is detected on its own
- * and is not a setting.
+ * keybox is damaged is declined and the next source tried, rather than silently salvaged.
+ *
+ * `format` is the container the source serves the keybox in. With `AUTO` (the default) it is
+ * detected on its own, which handles every source that serves one of the known containers; a
+ * specific format declares the outer container, for a source whose download `AUTO` cannot make
+ * sense of on its own.
  */
 @Serializable
-data class KeyboxSource(val url: String, val lenient: Boolean = false)
+data class KeyboxSource(val url: String, val lenient: Boolean = false, val format: KeyboxFormat = KeyboxFormat.AUTO)
+
+/**
+ * The container a keybox source serves the keybox in. `AUTO` detects it from the download; the
+ * others declare the outer container, after which any further container inside is still detected
+ * on its own (base64 of a gzip, say, is served with `BASE64`). A download that is not the declared
+ * format is a failure.
+ */
+@Serializable
+enum class KeyboxFormat {
+    AUTO,
+    XML,
+    BASE64,
+    GZIP,
+    ZIP,
+}
 
 /**
  * Downloads the inputs the engine checks and installs: the attestation keybox, a Pixel
@@ -46,7 +64,7 @@ class Downloader {
      * tolerating a broken keybox: the keybox inside is still read strictly unless its source is
      * `KeyboxSource.lenient`.
      */
-    suspend fun keybox(url: String): Fetched = Fetched(decodeKeybox(fetch(url)), url)
+    suspend fun keybox(url: String, format: KeyboxFormat = KeyboxFormat.AUTO): Fetched = Fetched(decodeKeybox(fetch(url), format), url)
 
     suspend fun fingerprint(url: String): Fetched = Fetched(fetch(url), url)
 
@@ -117,16 +135,26 @@ class Downloader {
 
         /**
          * The keybox XML inside `bytes`, unwrapping the containers mirrors serve it in: plain
-         * XML, base64, gzip, and a zip of a single file, in any nesting. Each layer is told apart
-         * with certainty \u2014 by its magic bytes (gzip, zip) or its exact alphabet (base64) \u2014 so no
-         * guess is involved and a container is never mistaken for a keybox or the reverse. The
-         * keybox itself is not parsed here; that is the engine's, after which it is read strictly
-         * unless the source is `KeyboxSource.lenient`.
+         * XML, base64, gzip, and a zip of a single file, in any nesting. With `KeyboxFormat.AUTO`
+         * each layer is told apart with certainty \u2014 by its magic bytes (gzip, zip) or its exact
+         * alphabet (base64) \u2014 so no guess is involved and a container is never mistaken for a
+         * keybox or the reverse; a declared `format` instead names the outer container and the
+         * rest is detected on its own. The keybox itself is not parsed here; that is the engine's,
+         * after which it is read strictly unless the source is `KeyboxSource.lenient`.
          *
-         * It is an error when, after unwrapping every container it recognizes, the result is not
-         * XML: the source served something that is not a keybox (an HTML error page, say).
+         * It is an error when the download is not the declared format, or when, after unwrapping
+         * every container it recognizes, the result is not XML: the source served something that
+         * is not a keybox (an HTML error page, say).
          */
-        fun decodeKeybox(bytes: ByteArray): ByteArray = unwrap(bytes, MAX_UNWRAP_DEPTH)
+        fun decodeKeybox(bytes: ByteArray, format: KeyboxFormat = KeyboxFormat.AUTO): ByteArray = when (format) {
+            KeyboxFormat.AUTO -> unwrap(bytes, MAX_UNWRAP_DEPTH)
+            // A declared format is the outer container: strip exactly it, then detect any further
+            // container inside on its own. A download that is not the declared format is a failure.
+            KeyboxFormat.XML -> if (looksLikeXML(bytes)) bytes else throw IOException("the keybox source did not serve XML")
+            KeyboxFormat.BASE64 -> unwrap(decodeBase64(bytes) ?: throw IOException("the keybox source did not serve base64"), MAX_UNWRAP_DEPTH - 1)
+            KeyboxFormat.GZIP -> unwrap(decodeGzip(bytes) ?: throw IOException("the keybox source did not serve gzip"), MAX_UNWRAP_DEPTH - 1)
+            KeyboxFormat.ZIP -> unwrap(unzipSingle(bytes) ?: throw IOException("the keybox source did not serve a zip"), MAX_UNWRAP_DEPTH - 1)
+        }
 
         private fun unwrap(bytes: ByteArray, depth: Int): ByteArray {
             if (looksLikeXML(bytes)) return bytes

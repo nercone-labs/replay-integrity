@@ -202,10 +202,14 @@ installed even when it is weak, as long as one of its keys matches its certifica
 
 A keybox source may serve the keybox in any of several containers, which are unwrapped before it
 is read: the plain XML, base64 of it, a gzip of it, or a zip holding one file, in any nesting
-(base64 of a gzip, say). Each container is told apart with certainty — by its leading bytes, or,
-for base64, by its alphabet — so a container is never mistaken for a keybox or the reverse. A
-source whose download, after every container is unwrapped, is not a keybox (an HTML error page,
-say) is a failure, and the next source is tried.
+(base64 of a gzip, say). Each source has a **format** setting (Settings → Sources): on **Auto**,
+the container is told apart with certainty — by its leading bytes, or, for base64, by its alphabet
+— so a container is never mistaken for a keybox or the reverse, which handles every source that
+serves one of these containers. A specific format (XML, base64, gzip, zip) instead declares the
+outer container, for a source whose download Auto cannot make sense of on its own; a further
+container inside is still detected. A download that is not the declared format, or that after
+every container is unwrapped is not a keybox (an HTML error page, say), is a failure, and the next
+source is tried.
 
 What is written to `keybox.xml` is not the downloaded file itself but its keys, checked and
 written again as a well-formed keybox. When a keybox has usable keys, the others (revoked,

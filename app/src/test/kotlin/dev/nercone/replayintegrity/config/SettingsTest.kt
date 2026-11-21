@@ -6,6 +6,7 @@ import dev.nercone.replayintegrity.engine.KeyboxPolicy
 import dev.nercone.replayintegrity.engine.TargetMode
 import dev.nercone.replayintegrity.engine.TargetScope
 import dev.nercone.replayintegrity.net.Downloader
+import dev.nercone.replayintegrity.net.KeyboxFormat
 import dev.nercone.replayintegrity.net.KeyboxSource
 import dev.nercone.replayintegrity.privilege.PrivilegeChoice
 import org.junit.Assert.assertEquals
@@ -88,14 +89,17 @@ class SettingsTest {
     fun leniencyIsAPerSourceSettingThatRoundTrips() {
         // Leniency is each source's own setting, honored on any source — not derived from the URL.
         val values = Settings.Values(keyboxSources = listOf(
-            KeyboxSource("https://custom.example/key", lenient = true),
+            KeyboxSource("https://custom.example/key", lenient = true, format = KeyboxFormat.BASE64),
             KeyboxSource(Downloader.DEFAULT_KEYBOX_URL, lenient = false),
         ))
         assertEquals(values, json.decodeFromString(Settings.Values.serializer(), json.encodeToString(Settings.Values.serializer(), values)))
         assertTrue("a user source can be lenient", values.keyboxSources[0].lenient)
+        assertEquals("and can declare a format", KeyboxFormat.BASE64, values.keyboxSources[0].format)
         assertTrue("the default mirror's URL is not special-cased", !values.keyboxSources[1].lenient)
-        // A fresh install seeds the default mirror, lenient.
-        assertEquals(listOf(KeyboxSource(Downloader.DEFAULT_KEYBOX_URL, lenient = true)), Settings.Values().keyboxSources)
+        // A fresh install seeds the default mirror, lenient, format detected on its own.
+        assertEquals(listOf(KeyboxSource(Downloader.DEFAULT_KEYBOX_URL, lenient = true, format = KeyboxFormat.AUTO)), Settings.Values().keyboxSources)
+        // The old URL fields migrate to sources whose format is detected on its own.
+        assertEquals(KeyboxFormat.AUTO, Settings.decode("""{"keyboxUrl":"https://mirror.example/key"}""").keyboxSources[0].format)
     }
 
     @Test

@@ -84,6 +84,24 @@ class DownloaderTest {
     }
 
     @Test
+    fun aDeclaredFormatStripsThatOuterContainerThenDetectsTheRest() {
+        // The declared format names the outer container; a further container inside is still
+        // detected on its own, so base64 of a gzip is read when the source is set to base64.
+        assertArrayEquals(keybox, Downloader.decodeKeybox(keybox, KeyboxFormat.XML))
+        assertArrayEquals(keybox, Downloader.decodeKeybox(Base64.getEncoder().encode(keybox), KeyboxFormat.BASE64))
+        assertArrayEquals(keybox, Downloader.decodeKeybox(gzip(keybox), KeyboxFormat.GZIP))
+        assertArrayEquals(keybox, Downloader.decodeKeybox(zip("keybox.xml" to keybox), KeyboxFormat.ZIP))
+        assertArrayEquals(keybox, Downloader.decodeKeybox(Base64.getEncoder().encode(gzip(keybox)), KeyboxFormat.BASE64))
+    }
+
+    @Test
+    fun aDownloadThatIsNotTheDeclaredFormatIsRejected() {
+        assertThrows(java.io.IOException::class.java) { Downloader.decodeKeybox(keybox, KeyboxFormat.BASE64) }
+        assertThrows(java.io.IOException::class.java) { Downloader.decodeKeybox(gzip(keybox), KeyboxFormat.XML) }
+        assertThrows(java.io.IOException::class.java) { Downloader.decodeKeybox(Base64.getEncoder().encode(keybox), KeyboxFormat.ZIP) }
+    }
+
+    @Test
     fun plainTextIsNotMistakenForBase64() {
         // Text with spaces and punctuation is outside the base64 alphabet, so it is not decoded.
         assertEquals(null, Downloader.decodeBase64("this is not base64!".toByteArray()))

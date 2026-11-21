@@ -176,7 +176,7 @@ class Replay(val context: Context) {
         var declined: InstallReport? = null
         for (source in sources) {
             val report = attempt(source.url, failures) {
-                val fetched = downloader.keybox(source.url)
+                val fetched = downloader.keybox(source.url, source.format)
                 val result = try {
                     engine.installKeybox(privilege, engine.write(KEYBOX, fetched.bytes), fetched.source, status, policy, source.lenient)
                 } catch (error: EngineException) {

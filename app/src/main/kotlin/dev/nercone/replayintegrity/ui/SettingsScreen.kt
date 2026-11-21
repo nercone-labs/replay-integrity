@@ -166,6 +166,8 @@ object SettingsScreen {
                         items = settings.keyboxSources,
                         urlLabel = stringResource(R.string.settings_keybox_url),
                         lenientLabel = stringResource(R.string.settings_keybox_lenient),
+                        formatLabel = stringResource(R.string.settings_keybox_format),
+                        describeFormat = { Labels.keyboxFormat(it) },
                         validate = Downloader::isAcceptable,
                         onChange = { list -> model.configure { it.copy(keyboxSources = list) } },
                     )
