@@ -752,14 +752,26 @@ and the target rules pushed the target list below the fold.
   (`PackageWatcher::is_outdated`), not only when the copy was just replaced: when ending it timed
   out once, the next installation found the copy unchanged and left the old engine watching.
 
+- **The engine leaves the cgroup of the application** (`ControlGroup` of `crates/android`). Android
+  keeps a group for every application process (`/apps/uid_<uid>/pid_<pid>` of the unified
+  hierarchy on Android 17), freezes it while the application is cached (seen on the emulator:
+  `cgroup.events` reads `frozen 1` some seconds after the application went to the background)
+  and ends every process in it with the application (`killProcessGroup` of libprocessgroup). The
+  `su` of KernelSU and APatch raises the calling process itself (KernelSU's `execve` hook calls
+  `ksu_escape_to_root` on it), so the engine, and every process it started, stayed in that group;
+  Magisk's `su` has its daemon start the root process, outside it. An engine run as root now
+  moves itself into the root groups first, when it finds itself in the group of an application
+  process, and the processes it starts are outside the group too. The keystore supervisor that
+  a restart starts inherits it, and so does the package watcher, which moved itself already.
+  Moving every engine run was preferred to moving only the long-lived processes: a command that
+  holds the lock of the store must not be frozen with the application either. Running the
+  operations of the screens as expedited work or in a foreground service was set aside: it keeps
+  the application running, but neither stops the system from ending it.
+
 Not changed, but known: removing the service script by hand does not stop a running watcher until
 the package list next changes (`hook remove` and `--no-watch` do stop it), and a keystore daemon
 that does not come back within the restart timeout fails the whole `apply`, although the
-configuration was already written. The engine runs in the cgroup of
-the application that started it when `su` raises the calling process (KernelSU, APatch): the
-system may then freeze or end it with the application, and a keystore supervisor it starts goes
-with it. This was found by reading, not seen on a device, and moving the engine to the root
-cgroups needs one to test on. `Engine::restart` ends the Play processes (and, when the settings
+configuration was already written. `Engine::restart` ends the Play processes (and, when the settings
 say so, the background applications) also after a repair at boot; and
 `KeystoreConfig::fingerprint_directory` names the store of the engine.
 
@@ -964,3 +976,17 @@ hook ends it (`PackageWatcher::is_watcher`).
 
 The Gradle property that limits the ABIs of a local build is `engine.abis` in both applications,
 so that the build files differ only in the names of the application.
+
+## Dependencies
+
+Every dependency is verified (`gradle/verification-metadata.xml`, SHA-256). The file is generated
+by Gradle (`--write-verification-metadata sha256` with the tasks of the CI and of a local build:
+`:app:testDebugUnitTest :app:assembleRelease :app:assembleDebug :app:lintDebug`), after its
+components were emptied, so that versions no longer used leave it. Gradle records the artifacts of
+the machine it runs on only: `aapt2` comes in one jar per system, and the jar for Linux, where the
+CI builds, is added by hand from Google's Maven repository. Both applications share the file.
+
+Material 3 is 1.5.0, its first stable release with the Expressive components, which needs Compose
+1.12 and so stays with the Compose BOM 2026.09.00. The next BOM (2026.11.01, Compose 1.13)
+requires `compileSdk` 37.1, a platform the build machines do not have yet; it was left for a
+change of its own.

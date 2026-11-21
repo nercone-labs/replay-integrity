@@ -1,6 +1,8 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use android::ControlGroup;
 
 use replay_integrity::{ApplyMode, Component, Engine, KeyboxPolicy, Layout, LogLine, PackageWatcher, ReplayError, Settings};
 use serde::Serialize;
@@ -277,6 +279,14 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // An engine the application started through an `su` that raises the calling process itself
+    // (KernelSU, APatch) is in the group of the application process, which the system freezes
+    // while the application is cached and ends whole with it. It leaves that group before
+    // anything else, and the processes it starts are outside it too. Run as the application, it
+    // has nothing to leave the system for, and could not.
+    if Engine::uid() == 0 {
+        ControlGroup::leave_application(Path::new("/"));
+    }
     let (result, log) = command_line.run();
     let (output, status) = match result {
         Ok(result) => (json!({ "ok": true, "result": result, "log": log }), ExitCode::SUCCESS),

@@ -612,7 +612,18 @@ fn one_package_watcher_holds_the_lock_at_a_time() {
     assert_eq!(fs::read_to_string(watcher.lock_path()).unwrap(), std::process::id().to_string());
     assert_eq!(watcher.running(), None);
     drop(first);
-    assert!(watcher.lock().unwrap().is_some());
+    // Released with the last descriptor of the file. A test running beside this one in the same
+    // process may be starting a child, which holds a copy of every descriptor until it executes
+    // its program (descriptors are closed on exec only then), so the lock is taken again within
+    // a short wait rather than at once.
+    let started = std::time::Instant::now();
+    loop {
+        if watcher.lock().unwrap().is_some() {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "the lock was not released");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let _ = fs::remove_dir_all(&root);
 }
 

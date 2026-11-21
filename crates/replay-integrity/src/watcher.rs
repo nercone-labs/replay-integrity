@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use android::ProcessInfo;
+use android::{ControlGroup, ProcessInfo};
 use serde::Serialize;
 
 use crate::{Layout, ReplayError, Store};
@@ -51,10 +51,6 @@ impl PackageWatcher {
     /// How long `stop` waits for an ended watcher to release its lock.
     pub const STOP_TIMEOUT: Duration = Duration::from_secs(3);
     pub const STOP_POLL: Duration = Duration::from_millis(50);
-    /// The roots of the cgroup hierarchies of Android: the unified one, in which the system
-    /// keeps a group per application process (`uid_<uid>/pid_<pid>`) and ends the whole group
-    /// with the application, and the earlier `cpuacct` one.
-    pub const CGROUP_ROOTS: [&'static str; 2] = ["/sys/fs/cgroup", "/acct"];
 
     pub fn new(layout: &Layout) -> PackageWatcher {
         PackageWatcher { layout: layout.clone(), settle: PackageWatcher::DEFAULT_SETTLE, boot_poll: PackageWatcher::DEFAULT_BOOT_POLL }
@@ -196,9 +192,6 @@ impl PackageWatcher {
     pub fn detach(&self) {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         let _ = rustix::process::setsid();
-        let pid = std::process::id().to_string();
-        for root in PackageWatcher::CGROUP_ROOTS {
-            let _ = std::fs::write(self.layout.path(root).join("cgroup.procs"), &pid);
-        }
+        ControlGroup::move_to_roots(&self.layout.root);
     }
 }

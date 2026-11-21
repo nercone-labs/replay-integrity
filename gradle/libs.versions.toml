@@ -1,16 +1,17 @@
 [versions]
-agp = "9.4.1"
+agp = "9.5.2"
 kotlin = "2.4.21"
+# Compose 1.12. The next BOM (2026.11.01, Compose 1.13) needs compileSdk 37.1.
 compose-bom = "2026.09.00"
-# Material 3 Expressive components (ButtonGroup, LoadingIndicator, SegmentedListItem, ...) are newer than the BOM.
-material3 = "1.5.0-beta01"
+# Material 3 Expressive components (ButtonGroup, LoadingIndicator, SegmentedListItem, ...) are
+# newer than this BOM; 1.5.0 is their first stable release, and needs Compose 1.12.
+material3 = "1.5.0"
 activity = "1.13.0"
-lifecycle = "2.11.0"
+lifecycle = "2.11.1"
 core = "1.19.1"
 work = "2.12.0"
-serialization = "1.11.0"
+serialization = "1.13.0"
 shizuku = "13.1.5"
-icons = "1.7.8"
 junit = "4.13.2"
 
 [libraries]
@@ -23,7 +24,7 @@ compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-
 compose-material3 = { module = "androidx.compose.material3:material3", version.ref = "material3" }
 compose-ui = { module = "androidx.compose.ui:ui" }
 compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
-compose-material-icons = { module = "androidx.compose.material:material-icons-extended", version.ref = "icons" }
+compose-material-icons = { module = "androidx.compose.material:material-icons-extended" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
 shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
