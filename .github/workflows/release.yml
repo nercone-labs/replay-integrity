@@ -42,14 +42,11 @@ jobs:
 
   test:
     needs: version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.version.outputs.commit }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --locked
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ needs.version.outputs.commit }}
 
   release:
     needs: [version, test]
