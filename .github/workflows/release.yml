@@ -67,7 +67,8 @@ jobs:
         with:
           packages: platform-tools ndk;${{ env.NDK_VERSION }}
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --stacktrace
+      - name: Build and test the application
+        run: .github/scripts/gradle.sh :app:testDebugUnitTest :app:assembleRelease --stacktrace
 
       - name: Sign the APK
         env:

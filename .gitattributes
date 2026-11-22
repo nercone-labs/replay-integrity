@@ -1,3 +1,4 @@
 # The Gradle wrapper must keep Unix line endings to run.
 gradlew text eol=lf
 *.bat text eol=crlf
+*.sh text eol=lf

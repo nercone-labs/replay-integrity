@@ -992,3 +992,18 @@ Material 3 is 1.5.0, its first stable release with the Expressive components, wh
 1.12 and so stays with the Compose BOM 2026.09.00. The next BOM (2026.11.01, Compose 1.13)
 requires `compileSdk` 37.1, a platform the build machines do not have yet; it was left for a
 change of its own.
+
+## Continuous integration
+
+Gradle runs in the workflows through `.github/scripts/gradle.sh`, the same script in TypeFace
+Droplet, Replay Integrity and FirstAlert, which runs it again (up to three times, a minute and
+then two apart) when it failed only because a dependency repository could not be reached.
+
+The first release of FirstAlert, which shares these workflows, failed this way: its release job
+started with an empty Gradle home and could not resolve the Kotlin Compose plugin, which the two
+test jobs of the same run, also with empty Gradle homes, had resolved minutes before from the
+same commit. Gradle reports an unreachable repository and a missing artifact with the same
+message, so the script cannot tell them apart: a dependency that is really missing fails after
+the last attempt, a few minutes later than it would otherwise. A build or test failure is never
+retried. *Set aside:* raising Gradle's own network retries, which do not cover a failure that
+ends as "not found", and retrying every failure, which would run failing tests three times.
